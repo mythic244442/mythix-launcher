@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "$HOME/**"
+          ]
+        }
+      },
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' asset: http://asset.localhost https://asset.localhost; img-src 'self' asset: https: http: data:;"
+    },
+    "windows": [
+      {
+        "decorations": false,
+        "devtools": false,
+        "height": 800,
+        "label": "main",
+        "minHeight": 600,
+        "minWidth": 600,
+        "resizable": true,
+        "title": "mythix",
+        "transparent": false,
+        "width": 800
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.png"
+    ],
+    "targets": "all"
+  },
+  "identifier": "dev.mythix.launcher",
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  },
+  "productName": "mythix",
+  "version": "0.2.0"
+}

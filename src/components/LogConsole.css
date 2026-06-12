@@ -1,0 +1,41 @@
+.log-console {
+  display: flex;
+  flex-direction: column;
+  height: 240px;
+  background-color: #0d0d0d;
+  color: #d1d1d1;
+  font-family: 'JetBrains Mono', 'Javanese', monospace;
+  font-size: 9px;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+
+.log-header {
+  padding: 8px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  font-weight: bold;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #888;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.log-header__hint {
+  color: #555;
+  font-weight: normal;
+}
+
+.log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 2px;
+}
