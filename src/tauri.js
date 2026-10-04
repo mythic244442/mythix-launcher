@@ -44,6 +44,8 @@ export const api = {
   windowClose:       ()                              => generateInvoke("window_close"),
   windowHide:        ()                              => generateInvoke("window_hide"),
   windowShow:        ()                              => generateInvoke("window_show"),
+  checkHidrawAccess: ()                              => generateInvoke("check_hidraw_access"),
+  installUdevRules:  ()                              => generateInvoke("install_udev_rules"),
 };
 
 export async function pickFile(filters = []) {

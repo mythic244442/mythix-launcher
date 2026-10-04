@@ -96,7 +96,7 @@ export default function QuickSettings({ game, onSave, onClose, onLaunch }) {
     const t = ENV_TOGGLES[i];
     setEnvOverrides(prev => {
       const next = { ...prev };
-      if (t.key in next) delete next[t.key];
+      if (t.key in next && next[t.key] === t.value) delete next[t.key];
       else next[t.key] = t.value;
       return next;
     });
@@ -188,7 +188,7 @@ export default function QuickSettings({ game, onSave, onClose, onLaunch }) {
         <label className="quick-settings__label">Quick Toggles</label>
         <div className="quick-settings__toggles">
           {ENV_TOGGLES.map((t, i) => {
-            const active = t.key in envOverrides;
+            const active = t.key in envOverrides && envOverrides[t.key] === t.value;
             const focused = zone === "env" && envIndex === i;
             return (
               <button

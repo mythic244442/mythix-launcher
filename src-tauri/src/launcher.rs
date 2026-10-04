@@ -12,6 +12,21 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::collections::HashMap;
 
+const BLOCK_HIDRAW_SO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/block_hidraw.so"));
+
+fn install_block_hidraw() -> Option<String> {
+    let data_dir = dirs::data_dir()?.join("mythix").join("lib");
+    let _ = fs::create_dir_all(&data_dir);
+    let so_path = data_dir.join("block_hidraw.so");
+    if !so_path.exists() || fs::read(&so_path).ok().as_deref() != Some(BLOCK_HIDRAW_SO) {
+        if let Err(e) = fs::write(&so_path, BLOCK_HIDRAW_SO) {
+            eprintln!("[mythix] Failed to install block_hidraw.so: {e}");
+            return None;
+        }
+    }
+    Some(so_path.to_string_lossy().into_owned())
+}
+
 // ── Prefix setup (mirrors mythix's setup_pfx) ──────────────────────────────────
 
 pub fn setup_pfx(prefix: &Path) -> Result<(), LauncherError> {
@@ -80,7 +95,7 @@ pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, Lau
     let proton_path = tool.path.clone();
     let prefix_path = config.prefix_path.clone().unwrap_or_else(|| {
         crate::paths::default_prefix_dir(&config.game_id)
-            .unwrap_or_else(|| PathBuf::from("/tmp").join("gamez-pfx_data").join(&config.game_id))
+            .unwrap_or_else(|| PathBuf::from("/tmp").join("gamedata").join(&config.game_id))
     });
 
     let install_path = exe_path.parent()
@@ -223,6 +238,39 @@ pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, Lau
     }
     lib_paths.dedup();
     env.insert("STEAM_RUNTIME_LIBRARY_PATH".into(), lib_paths.join(":"));
+
+    let ct = crate::gamepad::current_type();
+    eprintln!("[mythix] Controller type: {}", ct.as_str());
+
+    // Mythix Input Layer: auto-configure game glyphs based on detected controller
+    if let Some(controller_info) = crate::gamepad::current_info() {
+        crate::input_config::configure_game_glyphs(
+            &steam_app_id,
+            &prefix_path,
+            &controller_info,
+        );
+
+        let sdl_type = controller_info.controller_type.sdl_type_str(controller_info.ps_model);
+        env.insert("SDL_GAMECONTROLLERTYPE".into(), sdl_type.into());
+        eprintln!("[mythix] SDL_GAMECONTROLLERTYPE={}", sdl_type);
+    }
+
+    // block_hidraw is no longer needed — winebus hidraw haptics patch handles
+    // vibration natively, and blocking hidraw prevents proper DS4 VID/PID
+    // detection which games need for PlayStation glyph display.
+    // Legacy override: MYTHIX_BLOCK_HIDRAW=1 to re-enable if needed.
+    let block_hidraw = env.get("MYTHIX_BLOCK_HIDRAW").map(|v| v == "1").unwrap_or(false);
+    if block_hidraw {
+        if let Some(lib_path) = install_block_hidraw() {
+            let existing = env.get("LD_PRELOAD").cloned().unwrap_or_default();
+            let preload = if existing.is_empty() {
+                lib_path
+            } else {
+                format!("{existing}:{lib_path}")
+            };
+            env.insert("LD_PRELOAD".into(), preload);
+        }
+    }
 
     // Global env from settings (lower priority than per-game)
     let settings = crate::settings::load_settings();

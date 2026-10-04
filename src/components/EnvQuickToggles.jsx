@@ -77,7 +77,7 @@ export default function EnvQuickToggles({ envVars, onChange }) {
 
   function toggle(key, value) {
     const next = { ...envVars };
-    if (key in next) {
+    if (key in next && next[key] === value) {
       delete next[key];
     } else {
       next[key] = value;
@@ -139,8 +139,8 @@ export default function EnvQuickToggles({ envVars, onChange }) {
                 padding: "6px 0 0",
               }}>
                 {vars.map(({ key, label, value, desc }) => {
-                  const isActive = key in envVars;
-                  const displayVal = isActive ? envVars[key] : value;
+                  const isActive = key in envVars && envVars[key] === value;
+                  const displayVal = value;
 
                   return (
                     <button

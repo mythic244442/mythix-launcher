@@ -2,6 +2,7 @@ pub mod commands;
 pub mod error;
 pub mod game_library;
 pub mod gamepad;
+pub mod input_config;
 pub mod launcher;
 pub mod paths;
 pub mod runtime;
@@ -33,6 +34,7 @@ pub fn run() {
             fetch_cover, import_cover, clear_cover,
             get_settings, save_settings,
             window_minimize, window_maximize, window_close, window_hide, window_show,
+            check_hidraw_access, install_udev_rules,
         ])
         .setup(|app| {
             gamepad::start_monitor(app.handle().clone());

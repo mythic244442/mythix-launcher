@@ -3,7 +3,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../tauri.js";
 import { NavDropdown } from "./NavRail.jsx";
 
-function ControllerIndicator() {
+const GLYPHS = {
+  xbox: { a: "A", b: "B", x: "X", y: "Y", guide: "⌂" },
+  playstation: { a: "✕", b: "○", x: "□", y: "△", guide: "PS" },
+  switch: { a: "B", b: "A", x: "Y", y: "X", guide: "⌂" },
+};
+
+function ControllerIndicator({ controllerType }) {
   const [status, setStatus] = useState("disconnected");
 
   useEffect(() => {
@@ -26,9 +32,12 @@ function ControllerIndicator() {
   }, []);
 
   const connected = status === "connected";
+  const label = controllerType === "playstation" ? "🎮 PS"
+    : controllerType === "switch" ? "🎮 NS"
+    : "🎮";
 
   return (
-    <div className="controller-indicator" title={connected ? "Controller connected" : "No controller"}>
+    <div className="controller-indicator" title={connected ? `${controllerType} controller connected` : "No controller"}>
       <span className="controller-indicator__dot" style={{
         background: connected ? "#39ff14" : "transparent",
         boxShadow: connected ? "0 0 6px #39ff14" : "none",
@@ -36,22 +45,23 @@ function ControllerIndicator() {
       }} />
       <span className="controller-indicator__icon" style={{
         opacity: connected ? 0.9 : 0.25,
-      }}>🎮</span>
+      }}>{label}</span>
     </div>
   );
 }
 
-function ControllerLegend({ runningGame, controllerActive }) {
+function ControllerLegend({ runningGame, controllerActive, controllerType }) {
   if (!controllerActive) return null;
+  const g = GLYPHS[controllerType] || GLYPHS.xbox;
   const hints = [];
   if (runningGame) {
-    hints.push({ btn: "X/Y", label: "Stop" });
+    hints.push({ btn: `${g.x}/${g.y}`, label: "Stop" });
   } else {
-    hints.push({ btn: "X", label: "Settings" });
+    hints.push({ btn: g.x, label: "Settings" });
   }
-  hints.push({ btn: "A", label: "Launch" });
-  hints.push({ btn: "B", label: "Back" });
-  hints.push({ btn: "⌂", label: "Hide" });
+  hints.push({ btn: g.a, label: "Launch" });
+  hints.push({ btn: g.b, label: "Back" });
+  hints.push({ btn: g.guide, label: "Hide" });
 
   return (
     <div className="controller-legend">
@@ -65,7 +75,7 @@ function ControllerLegend({ runningGame, controllerActive }) {
   );
 }
 
-export default function TitleBar({ maximized, active, onNavigate, runningGame, onKillGame, controllerActive }) {
+export default function TitleBar({ maximized, active, onNavigate, runningGame, onKillGame, controllerActive, controllerType }) {
   function onMouseDown(e) {
     if (e.button !== 0) return;
     if (e.target.closest("button")) return;
@@ -104,8 +114,8 @@ export default function TitleBar({ maximized, active, onNavigate, runningGame, o
         </button>
       )}
 
-      <ControllerIndicator />
-      <ControllerLegend runningGame={runningGame} controllerActive={controllerActive} />
+      <ControllerIndicator controllerType={controllerType} />
+      <ControllerLegend runningGame={runningGame} controllerActive={controllerActive} controllerType={controllerType} />
 
       <div className="titlebar__controls">
         <button className="titlebar__btn" onClick={api.windowMinimize}>

@@ -69,7 +69,7 @@ export default function App() {
     api.windowHide();
   }, []);
 
-  const { zone, gridIndex, controllerActive } = useControllerNav({
+  const { zone, gridIndex, controllerActive, controllerType } = useControllerNav({
     view,
     onNavigate: setView,
     games,
@@ -91,7 +91,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <TitleBar maximized={maximized} active={view} onNavigate={setView} runningGame={runningGame} onKillGame={handleKillGame} controllerActive={controllerActive} />
+      <TitleBar maximized={maximized} active={view} onNavigate={setView} runningGame={runningGame} onKillGame={handleKillGame} controllerActive={controllerActive} controllerType={controllerType} />
       {showSetup ? (
         <RuntimeSetup
           progress={runtime.progress}

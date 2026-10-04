@@ -2,7 +2,7 @@
 //
 // mythix-launcher stores data in three roots:
 //   - $XDG_DATA_HOME/mythix/      (library.json, runtimes, covers…)
-//   - $HOME/.mythix/              (gamez-pfx_data prefixes)
+//   - $HOME/.mythix/              (gamedata prefixes)
 //   - $HOME/Games/mythix/         (default per-game install root)
 //
 // Older builds used "looni" in place of "mythix". On first run we move the

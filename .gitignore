@@ -28,3 +28,6 @@ src-tauri/gen/schemas/
 
 # Development reference archives
 archive/
+
+# AppImage build dirs
+mythix-app_image-*/

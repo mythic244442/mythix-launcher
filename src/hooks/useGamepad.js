@@ -1,10 +1,26 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const DEADZONE = 0.5;
 const REPEAT_DELAY = 400;
 const REPEAT_RATE = 150;
 
 const DIRS = ["up", "down", "left", "right"];
+
+function detectControllerType(id) {
+  if (!id) return "xbox";
+  const lower = id.toLowerCase();
+  if (lower.includes("dualshock") || lower.includes("dualsense")
+      || lower.includes("sony") || lower.includes("054c")
+      || lower.includes("playstation")) {
+    return "playstation";
+  }
+  if (lower.includes("nintendo") || lower.includes("switch")
+      || lower.includes("pro controller") || lower.includes("joy-con")
+      || lower.includes("057e")) {
+    return "switch";
+  }
+  return "xbox";
+}
 
 export function useGamepad(onInput) {
   const cbRef = useRef(onInput);
@@ -13,10 +29,23 @@ export function useGamepad(onInput) {
   const prev = useRef({});
   const repeatTimers = useRef({});
   const throttle = useRef(0);
+  const [controllerType, setControllerType] = useState("xbox");
 
   useEffect(() => {
     let raf;
     let active = true;
+    let unlistenType;
+
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen("gamepad:type", (ev) => {
+        setControllerType(ev.payload);
+      }).then(fn => { unlistenType = fn; });
+    });
+
+    function onConnect(e) {
+      setControllerType(detectControllerType(e.gamepad.id));
+    }
+    window.addEventListener("gamepadconnected", onConnect);
 
     function startRepeat(action) {
       if (!DIRS.includes(action)) return;
@@ -68,7 +97,6 @@ export function useGamepad(onInput) {
         rb:    !!btns[5]?.pressed,
       };
 
-      // Guide button — index 16, may not exist on all controllers
       if (btns.length > 16 && btns[16]) {
         now.guide = !!btns[16].pressed;
       } else {
@@ -95,6 +123,8 @@ export function useGamepad(onInput) {
     return () => {
       active = false;
       cancelAnimationFrame(raf);
+      window.removeEventListener("gamepadconnected", onConnect);
+      unlistenType?.();
       for (const action in repeatTimers.current) {
         clearTimeout(repeatTimers.current[action]);
         clearInterval(repeatTimers.current[action]);
@@ -103,4 +133,6 @@ export function useGamepad(onInput) {
       prev.current = {};
     };
   }, []);
+
+  return controllerType;
 }

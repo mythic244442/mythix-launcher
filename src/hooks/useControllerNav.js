@@ -175,11 +175,12 @@ export function useControllerNav({ view, onNavigate, games, onSelectGame, onLaun
     }
   }, [maximized, view, games, onNavigate, onSelectGame, onLaunchGame, onKillGame, onGuide, onQuickSettings]);
 
-  useGamepad(handleInput);
+  const controllerType = useGamepad(handleInput);
 
   return {
     zone,
     gridIndex,
     controllerActive: controllerActive && maximized,
+    controllerType,
   };
 }

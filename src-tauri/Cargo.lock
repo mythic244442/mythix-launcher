@@ -2086,11 +2086,12 @@ dependencies = [
 
 [[package]]
 name = "mythix-launcher"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "dirs 5.0.1",
  "env_logger",
  "futures-util",
+ "libc",
  "log",
  "nix",
  "reqwest 0.12.28",

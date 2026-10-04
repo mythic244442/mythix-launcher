@@ -351,13 +351,13 @@ pub async fn import_steam_game(
                     eprintln!("[mythix] Prefix clone failed: {}, creating fresh", e);
                     let _ = app.emit("import:status", "Prefix clone failed, creating fresh…".to_string());
                     let fallback = crate::paths::default_prefix_dir(&game_id)
-                        .unwrap_or_else(|| PathBuf::from("/tmp").join("gamez-pfx_data").join(&game_id));
+                        .unwrap_or_else(|| PathBuf::from("/tmp").join("gamedata").join(&game_id));
                     Some(fallback)
                 }
             }
         } else {
             let p = crate::paths::default_prefix_dir(&game_id)
-                .unwrap_or_else(|| PathBuf::from("/tmp").join("gamez-pfx_data").join(&game_id));
+                .unwrap_or_else(|| PathBuf::from("/tmp").join("gamedata").join(&game_id));
             Some(p)
         };
 
@@ -507,4 +507,60 @@ pub fn window_show(window: tauri::Window) {
     window.show().ok();
     window.unminimize().ok();
     window.set_focus().ok();
+}
+
+#[tauri::command]
+pub fn check_hidraw_access() -> bool {
+    use std::fs;
+    // Check if hidraw devices have uaccess ACLs or group permissions
+    // (the Tauri process may run as root, so check the actual file mode + ACL)
+    if let Ok(entries) = fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("hidraw") {
+                let path = entry.path();
+                if let Ok(meta) = fs::metadata(&path) {
+                    use std::os::unix::fs::MetadataExt;
+                    let mode = meta.mode();
+                    // Check if group or other has read access, or if uaccess ACL is set
+                    if mode & 0o044 != 0 {
+                        return true;
+                    }
+                    // Check for ACL (getfacl presence = uaccess rule applied)
+                    if let Ok(out) = std::process::Command::new("getfacl")
+                        .arg("-p").arg(&path)
+                        .output()
+                    {
+                        let acl = String::from_utf8_lossy(&out.stdout);
+                        if acl.contains("user:") && acl.lines().any(|l|
+                            l.starts_with("user:") && !l.starts_with("user::") && l.contains("rw"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub fn install_udev_rules() -> Result<String, String> {
+    let rules_src = include_str!("../udev/71-mythix-controllers.rules");
+    let dest = "/etc/udev/rules.d/71-mythix-controllers.rules";
+
+    let status = std::process::Command::new("pkexec")
+        .args(["bash", "-c", &format!(
+            "echo '{}' > {} && udevadm control --reload-rules && udevadm trigger",
+            rules_src.replace('\'', "'\\''"), dest
+        )])
+        .status()
+        .map_err(|e| format!("Failed to run pkexec: {}", e))?;
+
+    if status.success() {
+        Ok("Udev rules installed. Reconnect your controller.".into())
+    } else {
+        Err("Failed to install udev rules (authentication cancelled?)".into())
+    }
 }

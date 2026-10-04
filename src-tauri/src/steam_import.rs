@@ -193,7 +193,7 @@ pub fn clone_steam_prefix(
 
     let dest_base = crate::paths::dot_dir()
         .ok_or_else(|| LauncherError::Io("Cannot resolve HOME".into()))?
-        .join("gamez-pfx_data")
+        .join("gamedata")
         .join(dest_name);
 
     // If it already exists, remove it (user confirmed overwrite from frontend)
