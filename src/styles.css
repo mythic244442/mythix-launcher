@@ -98,7 +98,8 @@ html, body, #root {
   -webkit-user-drag: none;
   cursor: default;
   flex-shrink: 0;
-  overflow: hidden;
+  /* no overflow:hidden here — it clipped the nav dropdown menu */
+  overflow: visible;
 }
 
 .titlebar * {
