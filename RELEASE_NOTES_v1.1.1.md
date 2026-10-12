@@ -45,4 +45,4 @@ This release makes the launcher fully usable with just a controller, fixes force
 
 ---
 
-- Built with steel, grit, and hard work beyond measure, by Luna & CC :3
+- Built with steel, grit, and hard work beyond measure, by Mythix :3

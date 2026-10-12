@@ -7,7 +7,7 @@ Does NOT modify game files — all loader files live in ~/.mythix/loader_profile
 Profiles launch games you own, through the real steamclient, with Steam running.
 
 Usage:
-    mythix-loader <game_dir> [--appid APPID] [--exe EXE] [--name NAME] [--dry-run] [--json]
+    mythix-loader <game_dir> [--appid APPID] [--exe EXE] [--name NAME] [--dry-run] [--json] [--require-appid]
     mythix-loader --games [--all]
     mythix-loader --launch-info APPID
     mythix-loader --list
@@ -108,6 +108,11 @@ def error(msg):
     sys.exit(1)
 
 
+def _slug(text):
+    """Lowercase, spaces to dashes, only a-z 0-9 - _ kept ("" if nothing is left)."""
+    return re.sub(r"[^a-z0-9_-]", "", (text or "").lower().replace(" ", "-"))
+
+
 # ── VDF / ACF parsing ──────────────────────────────────────────────────────
 # Steam's libraryfolders.vdf and appmanifest_*.acf use the same text keyvalues
 # format: quoted tokens, { } maps. Minimal, dependency-free parser.
@@ -198,17 +203,23 @@ def steam_library_entries(steam_dir):
 
     `apps` is the set of appids that library's entry in libraryfolders.vdf
     registers — i.e. which library Steam considers the real home of each app.
+    Paths are deduped by their real location: ~/.steam/steam is usually a
+    symlink to ~/.local/share/Steam, which libraryfolders.vdf lists again.
+    The path is kept as libraryfolders.vdf spells it.
     """
     entries = []
     index = {}
 
-    def add(p, apps):
+    def add(p, apps, listed=False):
         p = os.path.normpath(p)
-        if p in index:
-            index[p]["apps"] |= set(apps)
+        key = os.path.realpath(p)
+        if key in index:
+            index[key]["apps"] |= set(apps)
+            if listed:
+                index[key]["path"] = p
             return
         e = {"path": p, "apps": set(apps)}
-        index[p] = e
+        index[key] = e
         entries.append(e)
 
     add(steam_dir, set())
@@ -221,9 +232,9 @@ def steam_library_entries(steam_dir):
             for key, val in folders.items():
                 if isinstance(val, dict) and val.get("path"):
                     apps = val.get("apps")
-                    add(val["path"], set(apps.keys()) if isinstance(apps, dict) else set())
+                    add(val["path"], set(apps.keys()) if isinstance(apps, dict) else set(), listed=True)
                 elif isinstance(val, str) and key.isdigit():  # legacy format
-                    add(val, set())
+                    add(val, set(), listed=True)
         except Exception as e:
             warn(f"could not parse libraryfolders.vdf: {e}")
     return entries
@@ -303,20 +314,30 @@ def is_tool_app(app):
 
 
 def resolve_appid_from_library(game_dir, apps=None):
-    """If game_dir maps to an installed app's directory, return (appid, name)."""
+    """If game_dir maps to an installed app's directory, return (appid, name).
+
+    Paths are compared with symlinks resolved, so ~/.steam/steam/... matches an
+    install the library lists under ~/.local/share/Steam/... A folder above
+    several installs (say steamapps/common) is ambiguous and matches nothing.
+    """
     if apps is None:
         apps = installed_apps()
-    target = os.path.normpath(os.path.abspath(game_dir))
+    target = os.path.realpath(game_dir)
+    insts = [(os.path.realpath(a["installdir"]), a) for a in apps if a["installdir"]]
     # exact install-dir match first
-    for app in apps:
-        inst = os.path.normpath(app["installdir"]) if app["installdir"] else ""
-        if inst and inst == target:
+    for inst, app in insts:
+        if inst == target:
             return app["appid"], app["name"]
-    # then containment either way (exe subfolder, or dir above the install)
-    for app in apps:
-        inst = os.path.normpath(app["installdir"]) if app["installdir"] else ""
-        if inst and (target.startswith(inst + os.sep) or inst.startswith(target + os.sep)):
+    # then a subfolder of an install (e.g. where the exe lives)
+    for inst, app in insts:
+        if target.startswith(inst + os.sep):
             return app["appid"], app["name"]
+    # then a folder above an install, but only if exactly one install is below it
+    below = [app for inst, app in insts if inst.startswith(target + os.sep)]
+    if len(below) == 1:
+        return below[0]["appid"], below[0]["name"]
+    if below:
+        warn(f"{game_dir} contains {len(below)} installed titles — pass the game's own folder")
     return None, None
 
 
@@ -367,7 +388,7 @@ class AppInfo:
         m = {}
         while True:
             t = d[off]; off += 1
-            if t == 0x08:
+            if t in (0x08, 0x0B):                             # end / alternate end
                 return m, off
             key, off = self._key(off)
             if t == 0x00:
@@ -378,10 +399,12 @@ class AppInfo:
                 v, = struct.unpack_from("<i", d, off); off += 4
             elif t == 0x03:
                 v, = struct.unpack_from("<f", d, off); off += 4
-            elif t == 0x04:                                   # color / pointer
+            elif t in (0x04, 0x06):                           # pointer / color
                 v, = struct.unpack_from("<i", d, off); off += 4
             elif t == 0x07:
                 v, = struct.unpack_from("<Q", d, off); off += 8
+            elif t == 0x0A:
+                v, = struct.unpack_from("<q", d, off); off += 8
             else:
                 raise ValueError("unknown vdf type 0x%02x at %d" % (t, off - 1))
             m[key] = v
@@ -497,8 +520,9 @@ def steam_args_for(entries, executable):
     return out
 
 
-def resolve_ci(base, rel):
-    """Resolve rel (may use \\ or /) under base, case-insensitively. File only."""
+def resolve_ci(base, rel, want_dir=False):
+    """Resolve rel (may use \\ or /) under base, case-insensitively.
+    Returns an existing file (or folder, with want_dir), else None."""
     rel = rel.replace("\\", "/")
     cur = base
     for part in [p for p in rel.split("/") if p and p != "."]:
@@ -515,23 +539,29 @@ def resolve_ci(base, rel):
         if match is None:
             return None
         cur = os.path.join(cur, match)
-    return cur if os.path.isfile(cur) else None
+    found = os.path.isdir(cur) if want_dir else os.path.isfile(cur)
+    return cur if found else None
 
 
 def get_pe_arch(exe_path):
-    with open(exe_path, "rb") as f:
-        if f.read(2) != b"MZ":
-            return None
-        f.seek(0x3C)
-        pe_offset = struct.unpack("<I", f.read(4))[0]
-        f.seek(pe_offset)
-        if f.read(4) != b"PE\x00\x00":
-            return None
-        machine = struct.unpack("<H", f.read(2))[0]
-        if machine == 0x14C:
-            return 32
-        elif machine == 0x8664:
-            return 64
+    """32 or 64 for an x86/x64 PE file; None otherwise, including for files that
+    are unreadable or cut short (a stray tiny .exe used to crash the scan)."""
+    try:
+        with open(exe_path, "rb") as f:
+            if f.read(2) != b"MZ":
+                return None
+            f.seek(0x3C)
+            pe_offset = struct.unpack("<I", f.read(4))[0]
+            f.seek(pe_offset)
+            if f.read(4) != b"PE\x00\x00":
+                return None
+            machine = struct.unpack("<H", f.read(2))[0]
+    except (OSError, struct.error):
+        return None
+    if machine == 0x14C:
+        return 32
+    if machine == 0x8664:
+        return 64
     return None
 
 
@@ -564,29 +594,31 @@ def get_pe_imports(exe_path):
                 f.read(8)
                 vsize, vaddr, rawsize, rawptr = struct.unpack("<IIII", f.read(16))
                 sections.append((vaddr, rawsize, rawptr))
-            for vaddr, rawsize, rawptr in sections:
-                if vaddr <= import_rva < vaddr + rawsize:
-                    file_offset = rawptr + (import_rva - vaddr)
-                    f.seek(file_offset)
-                    while True:
-                        entry = f.read(20)
-                        if len(entry) < 20:
-                            break
-                        _, _, _, name_rva, _ = struct.unpack("<IIIII", entry)
-                        if name_rva == 0:
-                            break
-                        name_offset = rawptr + (name_rva - vaddr)
-                        pos = f.tell()
-                        f.seek(name_offset)
-                        dll_name = b""
-                        while True:
-                            c = f.read(1)
-                            if c == b"\x00" or not c:
-                                break
-                            dll_name += c
-                        f.seek(pos)
-                        imports.append(dll_name.decode("ascii", errors="replace"))
+
+            # The descriptor table and the DLL names can sit in different sections.
+            def rva_to_offset(rva):
+                for vaddr, rawsize, rawptr in sections:
+                    if vaddr <= rva < vaddr + rawsize:
+                        return rawptr + (rva - vaddr)
+                return None
+
+            table = rva_to_offset(import_rva)
+            if table is None:
+                return imports
+            for i in range(4096):                 # bound the walk on corrupt files
+                f.seek(table + i * 20)
+                entry = f.read(20)
+                if len(entry) < 20:
                     break
+                _, _, _, name_rva, _ = struct.unpack("<IIIII", entry)
+                if name_rva == 0:
+                    break
+                name_offset = rva_to_offset(name_rva)
+                if name_offset is None:
+                    continue
+                f.seek(name_offset)
+                dll_name = f.read(256).split(b"\x00", 1)[0]
+                imports.append(dll_name.decode("ascii", errors="replace"))
     except Exception:
         pass
     return imports
@@ -759,8 +791,128 @@ def find_compatdata(appid, steam_dir=None):
     return None
 
 
-def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry_run=False):
-    """Plan (and, unless dry_run, write) a loader profile. Returns the plan dict."""
+# Keys older profiles had that the loader no longer reads; dropped on refresh.
+RETIRED_INI_KEYS = {"steamclientdll", "steamclient64dll", "steamclientso",
+                    "steamclient64so", "forcearch", "noinject"}
+
+
+def read_profile_ini(path):
+    """[MythixLoader] keys of an existing profile ini, as {lowercase: (Key, raw value)}.
+    Missing or unreadable file: {}."""
+    out = {}
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return out
+    if raw.startswith(b"\xff\xfe"):
+        text = raw[2:].decode("utf-16-le", "replace")
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:              # a legacy ANSI ini, as the loader reads it
+            text = raw.decode("cp1252", "replace")
+    in_section = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("["):
+            in_section = line.lower() == "[mythixloader]"
+            continue
+        if in_section and "=" in line:
+            name, value = line.split("=", 1)
+            name = name.strip()
+            if name:
+                out[name.lower()] = (name, value.strip())
+    return out
+
+
+EXAMPLE_SCRIPT = """\
+@echo off
+rem ================================================================
+rem  Example RunBefore / RunAfter script for Mythix Loader
+rem ================================================================
+rem
+rem  Put .bat, .cmd or .exe helpers in this scripts\\ folder. Then, in
+rem  mythix_loader.ini, point RunBefore or RunAfter at one by its bare
+rem  name -- the loader looks here first and finds it automatically:
+rem
+rem      RunBefore=example.bat
+rem      RunAfter=example.bat "%MYTHIX_GAME_DIR%"
+rem
+rem  The loader runs it in the game's working directory, with the game's
+rem  environment, and waits for it to finish. RunAfter needs Persist=1.
+rem
+rem  Handy variables the loader sets:
+rem      %MYTHIX_PROFILE_DIR%   this profile folder
+rem      %MYTHIX_GAME_DIR%      the folder the game's exe is in
+rem      %SteamAppId%           the Steam app id
+rem
+rem  This example only prints a line (it shows up in the loader's log).
+rem  Nothing here runs unless you wire it up in the ini.
+
+echo [example.bat] ran at %DATE% %TIME%  (args: %*)
+"""
+
+
+def profile_readme(profile_name, game_name, appid, exe_path, run_dir, arch, stub_name):
+    """Plain-text README.txt for a profile folder (regenerated on each run)."""
+    name = game_name or profile_name
+    appid_line = appid if (appid and appid != "0") else "(unknown — set AppId in the ini)"
+    title = f"Mythix Loader profile: {name}"
+    return "\n".join([
+        title,
+        "=" * len(title),
+        "",
+        "Running the loader stub in this folder launches the game through your",
+        "installed, running Steam client, using the settings in mythix_loader.ini.",
+        "Steam must be running, and must own the game. Nothing in the game's own",
+        "folder is touched.",
+        "",
+        f"  Game:       {name}",
+        f"  Steam app:  {appid_line}",
+        f"  Launches:   {exe_path}",
+        f"  Works in:   {run_dir}",
+        f"  Stub:       {stub_name}  ({arch}-bit)",
+        "",
+        "What's in this folder",
+        "---------------------",
+        f"  {stub_name:<20}The loader. Don't edit by hand; re-run mythix-loader to",
+        "                      update it.",
+        "  mythix_loader.ini   Settings. Edit this to change how the game launches.",
+        "  last_run.ini        Written after each launch: when it ran, how long, and",
+        "                      the exit code. Machine-readable; safe to delete.",
+        "  logs/               The last few launch logs (LogHistory in the ini sets",
+        "                      how many). The current run's log is the LogFile named",
+        "                      in the ini (mythix_loader.log by default).",
+        "  scripts/            .bat/.cmd/.exe helpers for RunBefore/RunAfter. A bare",
+        "                      name in the ini is found here automatically. See",
+        "                      scripts/example.bat.",
+        "  README.txt          This file (regenerated by mythix-loader).",
+        "",
+        "Changing things",
+        "---------------",
+        "  Edit mythix_loader.ini. Common tweaks:",
+        "    ExeCommandLine=         extra arguments always passed to the game",
+        "    EnvVars=                environment variables (KEY=VAL;KEY2=VAL2)",
+        "    Priority= / Affinity=   CPU priority and which cores the game may use",
+        "    RunBefore= / RunAfter=  commands around the launch (see scripts/)",
+        "  Re-running  mythix-loader \"<game folder>\"  rewrites Exe, ExeRunDir and",
+        "  AppId from the game and keeps everything else you set here.",
+        "",
+        "Launch by hand (the Steam client must be running):",
+        f"  SteamAppId={appid if appid != '0' else '<appid>'} "
+        f"<compat_tool>/neutron waitforexitandrun \"{os.path.join('<this folder>', stub_name)}\"",
+        "",
+    ])
+
+
+def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry_run=False,
+                   require_appid=False):
+    """Plan (and, unless dry_run, write) a loader profile. Returns the plan dict.
+    With require_appid, a game whose appid can't be found is an error and
+    nothing is written (instead of a profile with AppId=0)."""
     if not JSON_MODE:
         print(BANNER)
 
@@ -789,9 +941,18 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     launch_args = ""
     launch_source = "heuristic"
     steam_options = []
+    inst_dir = matched["installdir"] if (matched and matched["installdir"]) else game_dir
+    entries = []
+    if appid and appid.isdigit():
+        ai = find_appinfo()
+        entries = launch_options(ai.app(int(appid)) if ai else None)
+    ranked = rank_windows_launches(entries)
+
     if target_exe:
-        target_abs = os.path.abspath(target_exe)
-        match = next((r for r in results if os.path.abspath(r["path"]) == target_abs), None)
+        # A relative --exe is looked up under the game dir first, then the cwd.
+        wanted = [target_exe] if os.path.isabs(target_exe) else [os.path.join(game_dir, target_exe), target_exe]
+        wanted = {os.path.realpath(p) for p in wanted}
+        match = next((r for r in results if os.path.realpath(r["path"]) in wanted), None)
         if not match:
             match = next((r for r in results if r["name"].lower() == os.path.basename(target_exe).lower()), None)
         if match:
@@ -800,32 +961,48 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
         else:
             error(f"Specified exe not found: {target_exe}")
     else:
-        if appid and appid.isdigit():
-            inst = matched["installdir"] if (matched and matched["installdir"]) else game_dir
-            ai = find_appinfo()
-            app_meta = ai.app(int(appid)) if ai else None
-            entries = launch_options(app_meta)
-            for opt in rank_windows_launches(entries):
-                cand = resolve_ci(inst, opt["executable"])
-                if cand:
-                    main_exe = {
-                        "path": cand,
-                        "name": os.path.basename(cand),
-                        "arch": get_pe_arch(cand),
-                        "has_steam": False,
-                        "size_mb": os.path.getsize(cand) / (1024 * 1024),
-                    }
-                    launch_source = "appinfo"
-                    steam_options = steam_args_for(entries, opt["executable"])
-                    log(f"Launch target from Steam app config: {opt['executable']}")
-                    if steam_options:
-                        log(f"  Steam's launch options for it: {' | '.join(steam_options)}")
-                        log("  (not applied — add one to the game's launch args if you want it)")
-                    break
+        for opt in ranked:
+            cand = resolve_ci(inst_dir, opt["executable"])
+            if cand:
+                main_exe = {
+                    "path": cand,
+                    "name": os.path.basename(cand),
+                    "arch": get_pe_arch(cand),
+                    "has_steam": False,
+                    "size_mb": os.path.getsize(cand) / (1024 * 1024),
+                }
+                launch_source = "appinfo"
+                log(f"Launch target from Steam app config: {opt['executable']}")
+                break
         if main_exe is None:
             main_exe = pick_main_exe(results, game_dir)
     if not main_exe:
         error("Could not identify a game executable")
+
+    # Steam's own launch entry for the chosen exe (however it was chosen) gives
+    # the working directory, and its argument variants are listed for reference.
+    exe_real = os.path.realpath(main_exe["path"])
+    exe_entry = None
+    for opt in ranked:
+        cand = resolve_ci(inst_dir, opt["executable"])
+        if cand and os.path.realpath(cand) == exe_real:
+            exe_entry = opt
+            break
+    # The game runs in Steam's workingdir for the entry if it sets one, else in
+    # the exe's own folder — never in the profile dir, so games that load files
+    # relative to their working directory find them.
+    run_dir = os.path.dirname(main_exe["path"])
+    if exe_entry:
+        steam_options = steam_args_for(entries, exe_entry["executable"])
+        if steam_options:
+            log(f"  Steam's launch options for it: {' | '.join(steam_options)}")
+            log("  (not applied — add one to the game's launch args if you want it)")
+        if exe_entry["workingdir"]:
+            wd = resolve_ci(inst_dir, exe_entry["workingdir"], want_dir=True)
+            if wd:
+                run_dir = wd
+            else:
+                warn(f"Steam's working dir '{exe_entry['workingdir']}' not found — using the exe's folder")
 
     try:
         rel = os.path.relpath(main_exe["path"], game_dir)
@@ -834,16 +1011,15 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     except ValueError:
         rel = main_exe["path"]
     log(f"Main exe: {rel}")
+    log(f"Run dir:  {run_dir}")
     arch = main_exe["arch"] or 64
     print()
 
     if appid and appid != "0":
         log(f"Steam library match: {game_name or '?'} (appid {appid})")
+        print()
     else:
-        warn("Game not found in your Steam library — launching needs an owned,")
-        warn("installed title. Set --appid manually if you know it.")
-        appid = "0"
-    print()
+        appid = "0"     # settled below, once an existing profile can be checked
 
     # Loader exe
     log("--- Step 1: Mythix Loader ---")
@@ -854,7 +1030,7 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     print()
 
     # Steam client DLLs
-    log("--- Step 2: Steam client DLLs ---")
+    log("--- Step 2: Steam install ---")
     dlls = find_steam_client_dlls()
     if not dlls:
         error("Could not find Steam client DLLs. Is Steam installed?")
@@ -862,17 +1038,52 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     print()
 
     # Profile name is always sanitized (also when given via --name) so the
-    # profile dir can never land outside ~/.mythix/loader_profiles/.
-    if not profile_name:
-        profile_name = game_name or os.path.basename(os.path.normpath(game_dir))
-    profile_name = re.sub(r"[^a-z0-9_-]", "", profile_name.lower().replace(" ", "-"))
-    if not profile_name:
-        error("Could not derive a profile name — pass --name")
+    # profile dir can never land outside ~/.mythix/loader_profiles/. A title
+    # with no ASCII letters (e.g. a Japanese name) falls back to the folder
+    # name, then to the appid.
+    if profile_name:
+        profile_name = _slug(profile_name)
+        if not profile_name:
+            error("--name needs at least one of a-z, 0-9, - or _")
+    else:
+        profile_name = (_slug(game_name) or _slug(os.path.basename(os.path.normpath(game_dir)))
+                        or (f"app-{appid}" if appid != "0" else ""))
+        if not profile_name:
+            error("Could not derive a profile name — pass --name")
 
     profile_dir = os.path.join(PROFILES_DIR, profile_name)
-    stub_name = os.path.splitext(main_exe["name"])[0].lower().replace(" ", "-")
-    stub_name = re.sub(r"[^a-z0-9_-]", "", stub_name) + ".exe"
-    inst_dir = matched["installdir"] if (matched and matched["installdir"]) else game_dir
+    stub_name = (_slug(os.path.splitext(main_exe["name"])[0]) or "game") + ".exe"
+
+    # An existing profile: its settings are kept (Exe, ExeRunDir and AppId
+    # come from the game), and an AppId set by hand survives a game the
+    # library doesn't know.
+    ini_path = os.path.join(profile_dir, "mythix_loader.ini")
+    old = read_profile_ini(ini_path)
+    if appid == "0":
+        old_appid = old.get("appid", ("", ""))[1]
+        if old_appid.isdigit() and old_appid != "0":
+            log(f"Not in the Steam library; keeping AppId={old_appid} from the existing profile")
+            appid = old_appid
+        elif require_appid:
+            error("Couldn't find this game's Steam appid — pass --appid")
+        else:
+            warn("Game not found in your Steam library — launching needs an owned,")
+            warn("installed title. Set --appid manually if you know it.")
+        print()
+    for name, new in (("Exe", main_exe["path"]), ("ExeRunDir", run_dir)):
+        prev = old.get(name.lower())
+        if prev and prev[1] != new:
+            log(f"  {name} changes from {prev[1]} to {new}")
+    defaults = [("ExeCommandLine", launch_args), ("EnvVars", ""), ("Persist", "1"),
+                ("WaitForChildren", "1"), ("SingleInstance", "1"), ("Priority", ""),
+                ("Affinity", ""), ("RunBefore", ""), ("RunAfter", ""),
+                ("LogFile", "mythix_loader.log"), ("LogHistory", "10"), ("LastRun", "1"),
+                ("ShowConsole", "0"), ("Debug", "0"), ("ExtraDlls", "")]
+    settings = {name: old[name.lower()][1] if name.lower() in old else default
+                for name, default in defaults}
+    kept = [name for name, default in defaults if settings[name] != default]
+    if kept:
+        log(f"  {'Would keep' if dry_run else 'Keeping'} your settings: {', '.join(kept)}")
 
     plan = {
         "ok": True,
@@ -881,7 +1092,8 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
         "name": game_name or os.path.basename(os.path.normpath(game_dir)),
         "game_dir": inst_dir,
         "exe": main_exe["path"],
-        "args": launch_args,
+        "run_dir": run_dir,
+        "args": settings["ExeCommandLine"],
         "launch_options": steam_options,
         "arch": arch,
         "launch_source": launch_source,
@@ -890,14 +1102,14 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
         "stub_path": os.path.join(profile_dir, stub_name),
         "ini_path": os.path.join(profile_dir, "mythix_loader.ini"),
         "steam_prefix": find_compatdata(appid),
+        "kept_settings": kept,
     }
 
     if dry_run:
         log(f"Dry run — would create profile '{profile_name}' at {profile_dir}")
         return plan
 
-    os.makedirs(os.path.join(profile_dir, "client", "x86"), exist_ok=True)
-    os.makedirs(os.path.join(profile_dir, "client", "x86_64"), exist_ok=True)
+    os.makedirs(profile_dir, exist_ok=True)
 
     log(f"--- Step 3: Creating profile '{profile_name}' ---")
 
@@ -918,83 +1130,136 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
         if os.path.islink(p) or os.path.isfile(p):
             os.remove(p)
             log(f"  Removed leftover {leftover} from the profile root")
-
-    # Copy steamclient DLLs and .so natives
-    if "x86" in dlls:
-        if "dll" in dlls["x86"]:
-            shutil.copy2(dlls["x86"]["dll"], os.path.join(profile_dir, "client", "x86", "steamclient.dll"))
-            log(f"  steamclient.dll (x86)")
-        if "so" in dlls["x86"]:
-            shutil.copy2(dlls["x86"]["so"], os.path.join(profile_dir, "client", "x86", "steamclient.so"))
-            log(f"  steamclient.so (x86 native)")
-    if "x86_64" in dlls:
-        if "dll" in dlls["x86_64"]:
-            shutil.copy2(dlls["x86_64"]["dll"], os.path.join(profile_dir, "client", "x86_64", "steamclient64.dll"))
-            log(f"  steamclient64.dll (x86_64)")
-        if "so" in dlls["x86_64"]:
-            shutil.copy2(dlls["x86_64"]["so"], os.path.join(profile_dir, "client", "x86_64", "steamclient.so"))
-            log(f"  steamclient.so (x86_64 native)")
+    # Before v1.3 every profile also carried its own steamclient copies in client/
+    # (~100 MB, going stale with each Steam update). The game's steam_api loads the
+    # running Steam's own steamclient, so drop them; anything else in client/ stays.
+    # Symlinked dirs are left alone so nothing outside the profile is touched.
+    removed = False
+    client_dir = os.path.join(profile_dir, "client")
+    if os.path.isdir(client_dir) and not os.path.islink(client_dir):
+        for sub_dir, names in (("x86", ("steamclient.dll", "steamclient.so")),
+                               ("x86_64", ("steamclient64.dll", "steamclient.so"))):
+            d = os.path.join(client_dir, sub_dir)
+            if not os.path.isdir(d) or os.path.islink(d):
+                continue
+            for n in names:
+                p = os.path.join(d, n)
+                if os.path.islink(p) or os.path.isfile(p):
+                    os.remove(p)
+                    removed = True
+            if not os.listdir(d):
+                os.rmdir(d)
+        if not os.listdir(client_dir):
+            os.rmdir(client_dir)
+    if removed:
+        log("  Removed old steamclient copies from client/")
 
     # Copy loader exe
     shutil.copy2(loader_exe, os.path.join(profile_dir, stub_name))
     log(f"  Stub: {stub_name}")
 
-    # Generate mythix_loader.ini
-    sc_dll = os.path.join(profile_dir, "client", "x86", "steamclient.dll")
-    sc64_dll = os.path.join(profile_dir, "client", "x86_64", "steamclient64.dll")
-    sc_so = os.path.join(profile_dir, "client", "x86", "steamclient.so")
-    sc64_so = os.path.join(profile_dir, "client", "x86_64", "steamclient.so")
+    # Generate mythix_loader.ini: Exe, ExeRunDir and AppId from the game, the
+    # rest from `settings` (an existing ini's values, else the defaults).
+    def key(name, _default=None):
+        return f"{name}={settings[name]}"
 
     ini_lines = [
         f"# Mythix Loader profile — {profile_name}",
-        "# Generated by mythix-loader",
+        "# Generated by mythix-loader. Re-running it on the game rewrites Exe,",
+        "# ExeRunDir and AppId and keeps every other setting here (comments are",
+        "# rewritten). To turn a setting off, set it to 0 or leave it empty: a",
+        "# deleted key comes back with its default.",
+        "# Values can use %VARS%: the environment, %MYTHIX_PROFILE_DIR% (this",
+        "# folder), %MYTHIX_GAME_DIR% (the exe's folder), %SteamAppId% and EnvVars",
+        "# names (Exe itself only the first two). Relative paths start here.",
         "[MythixLoader]",
         f"Exe={main_exe['path']}",
-        f"ExeRunDir={profile_dir}",
+        "# Working directory for the game: Steam's for this exe, else the exe's folder.",
+        f"ExeRunDir={run_dir}",
         "# Arguments always passed to the game. Arguments given to the loader itself",
         "# (e.g. per-game launch args from the Mythix launcher) are added after these.",
-        f"ExeCommandLine={launch_args}",
+        key("ExeCommandLine", launch_args),
     ]
     if steam_options:
         ini_lines.append(f"# Steam's launch options for this exe: {' | '.join(steam_options)}")
     ini_lines += [
         f"AppId={appid}",
-        f"SteamClientDll={sc_dll}",
-        f"SteamClient64Dll={sc64_dll}",
         "",
-        "# Native .so fallbacks (Wine/Proton can load these directly)",
+        "# Extra environment variables for the game: KEY=VAL;KEY2=VAL2, -KEY removes one.",
+        "# A ';' that isn't followed by NAME= stays in the value: PATH=%PATH%;C:\\tools",
+        key("EnvVars", ""),
+        "",
+        "# Wait for game to exit before the loader exits (returns the exe's exit code)",
+        key("Persist", "1"),
+        "# ...including processes the game starts, e.g. when the exe is a launcher",
+        "# that starts the real game and exits. 0 = wait for the exe only. Keep 1",
+        "# under neutron: a direct launch kills what's left 30 s after the stub exits.",
+        key("WaitForChildren", "1"),
+        "# Don't start a second copy while this profile's game is still running: a",
+        "# second launch waits for the running one instead (needs Persist=1).",
+        key("SingleInstance", "1"),
+        "",
+        "# CPU priority: idle, belownormal, normal, abovenormal or high. Under Wine the",
+        "# class is set, but it usually doesn't change real scheduling.",
+        key("Priority", ""),
+        "# CPU cores the game may use, e.g. 0 or 0,2-3 (helps old games that glitch",
+        "# on many cores). The processes it starts get the same cores.",
+        key("Affinity", ""),
+        "",
+        "# Windows command lines run before the game starts and after it exits (or",
+        "# right away if it couldn't start), in its working dir, with its environment.",
+        "# The loader waits for each. A bare name (e.g. backup.bat) is looked up in",
+        "# this profile's scripts\\ folder first, then next to the loader and on PATH;",
+        "# or give a full path, or %MYTHIX_GAME_DIR%\\x.exe. .bat/.cmd scripts work.",
+        "# Under Wine a Linux program can be started too, but not waited for.",
+        "# RunAfter needs Persist=1. See scripts\\example.bat.",
+        key("RunBefore", ""),
+        key("RunAfter", ""),
+        "",
+        "# The loader's log, also written here (overwritten each launch); empty = none.",
+        key("LogFile", "mythix_loader.log"),
+        "# How many previous logs to keep in the logs\\ folder (0 stops archiving;",
+        "# any logs already in logs\\ are left alone).",
+        key("LogHistory", "10"),
+        "# Write last_run.ini (time, duration, exit code) after each launch.",
+        key("LastRun", "1"),
+        "# Open a console window showing the game's output and Wine's debug channels",
+        "# (handy, works under any compat tool); it waits for a key after the game",
+        "# exits. Needs a real desktop console; ignored where there isn't one.",
+        key("ShowConsole", "0"),
+        "# More detail in the log",
+        key("Debug", "0"),
+        "",
+        "# DLLs loaded into the loader process itself, NOT into the game. Only for",
+        "# troubleshooting the loader (e.g. checking a DLL loads in this prefix);",
+        "# a DLL that crashes or hangs while loading stops the launch. ';'-separated.",
+        key("ExtraDlls", ""),
     ]
-    if os.path.isfile(sc_so) or ("x86" in dlls and "so" in dlls["x86"]):
-        ini_lines.append(f"SteamClientSo={sc_so}")
-    else:
-        ini_lines.append("#SteamClientSo=")
-    if os.path.isfile(sc64_so) or ("x86_64" in dlls and "so" in dlls["x86_64"]):
-        ini_lines.append(f"SteamClient64So={sc64_so}")
-    else:
-        ini_lines.append("#SteamClient64So=")
-    ini_lines += [
-        "",
-        "# Extra DLLs to load (semicolon-separated paths)",
-        "ExtraDlls=",
-        "",
-        "# Extra environment variables (KEY=VAL;KEY2=VAL2)",
-        "EnvVars=",
-        "",
-        "# Wait for game to exit before the loader exits",
-        "Persist=1",
-        "",
-        "# Enable debug logging",
-        "Debug=0",
-        "",
-        "# Force architecture (0=auto, 32, 64)",
-        "ForceArch=0",
-        "",
-        "# Skip pointing the loader's DLL search at client/ (just launch with env vars)",
-        "NoInject=0",
-    ]
-    ini_path = os.path.join(profile_dir, "mythix_loader.ini")
-    with open(ini_path, "w") as f:
+    known = {"exe", "exerundir", "appid", "execommandline", "envvars", "persist",
+             "waitforchildren", "singleinstance", "priority", "affinity", "runbefore",
+             "runafter", "logfile", "loghistory", "lastrun", "showconsole",
+             "debug", "extradlls"} | RETIRED_INI_KEYS
+    extra = [f"{name}={value}" for low, (name, value) in old.items() if low not in known]
+    if extra:
+        ini_lines += ["", "# Kept from the previous ini (this loader version doesn't use them)"] + extra
+    with open(ini_path, "w", encoding="utf-8") as f:   # the loader reads UTF-8
         f.write("\n".join(ini_lines) + "\n")
+
+    # Fill out the folder: logs/ for the loader's log history, scripts/ for
+    # RunBefore/RunAfter helpers (with a commented example), and a plain-text
+    # README. The example is only written once so edits to it are kept; the
+    # README is regenerated each time.
+    os.makedirs(os.path.join(profile_dir, "logs"), exist_ok=True)
+    scripts_dir = os.path.join(profile_dir, "scripts")
+    os.makedirs(scripts_dir, exist_ok=True)
+    example = os.path.join(scripts_dir, "example.bat")
+    if not os.path.exists(example):
+        with open(example, "w", encoding="utf-8", newline="\r\n") as f:
+            f.write(EXAMPLE_SCRIPT)
+    with open(os.path.join(profile_dir, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(profile_readme(profile_name, game_name, appid, main_exe["path"],
+                               run_dir, arch, stub_name))
+    log("  Folders:    logs/, scripts/ (with example.bat), README.txt")
 
     print()
     stub_path = os.path.join(profile_dir, stub_name)
@@ -1007,6 +1272,7 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     log(f"AppID:      {appid}")
     log(f"Arch:       {arch}-bit")
     log(f"Main exe:   {main_exe['name']}")
+    log(f"Run dir:    {run_dir}")
     if steam_options:
         log(f"Steam opts: {' | '.join(steam_options)}  (not baked in — pass one as a launch arg)")
     log(f"Profile:    {profile_dir}")
@@ -1015,8 +1281,9 @@ def create_profile(game_dir, appid=None, target_exe=None, profile_name=None, dry
     log(f"Config:     {ini_path}")
     log(f"  Edit the ini to add extra DLLs, env vars, or tweak settings.")
     print()
-    log("To launch (Steam must be running in the same prefix):")
-    log(f"  <compat_tool>/neutron waitforexitandrun \"{stub_path}\" [game args...]")
+    log("To launch by hand (the Steam client must be running; SteamAppId makes")
+    log("neutron go through its steam.exe shim, which connects the game to Steam):")
+    log(f"  SteamAppId={appid} <compat_tool>/neutron waitforexitandrun \"{stub_path}\" [game args...]")
     print()
     return plan
 
@@ -1120,7 +1387,7 @@ def list_profiles():
         appid = "?"
         exe_name = "?"
         if os.path.isfile(ini):
-            with open(ini) as f:
+            with open(ini, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     s = line.strip()
                     if s.startswith("Exe="):
@@ -1207,6 +1474,8 @@ Examples:
                         help="Print one JSON result object to stdout (human output goes to stderr)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Plan the profile (appid, launch target, paths) without writing anything")
+    parser.add_argument("--require-appid", action="store_true",
+                        help="Fail without writing anything if the appid can't be found")
     parser.add_argument("--loader-dir", metavar="DIR",
                         help="Directory holding mythix_loader.exe / mythix_loader_32.exe")
     args = parser.parse_args()
@@ -1235,13 +1504,18 @@ Examples:
     game_dir = os.path.abspath(args.game_dir)
     if not os.path.isdir(game_dir):
         error(f"Not a directory: {game_dir}")
+    if args.appid is not None:
+        args.appid = args.appid.strip()
+        if not args.appid.isdigit():
+            error(f"--appid must be a number, got '{args.appid}'")
 
     if JSON_MODE:
         # Human-readable output goes to stderr; stdout carries only the result.
         sys.stdout = sys.stderr
         try:
             plan = create_profile(game_dir, appid=args.appid, target_exe=args.target_exe,
-                                  profile_name=args.profile_name, dry_run=args.dry_run)
+                                  profile_name=args.profile_name, dry_run=args.dry_run,
+                                  require_appid=args.require_appid)
         except SystemExit:
             raise
         except Exception as e:  # never leave the launcher without a JSON answer
@@ -1253,11 +1527,12 @@ Examples:
         return
 
     plan = create_profile(game_dir, appid=args.appid, target_exe=args.target_exe,
-                          profile_name=args.profile_name, dry_run=args.dry_run)
+                          profile_name=args.profile_name, dry_run=args.dry_run,
+                          require_appid=args.require_appid)
     if args.dry_run:
         print()
         log("Dry run — nothing was written:")
-        for key in ("name", "appid", "exe", "launch_options", "launch_source",
+        for key in ("name", "appid", "exe", "run_dir", "launch_options", "launch_source",
                     "profile_dir", "stub_path", "steam_prefix"):
             log(f"  {key:<13} {plan.get(key)}")
         print()
