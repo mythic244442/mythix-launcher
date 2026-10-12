@@ -4,8 +4,10 @@ pub mod game_library;
 pub mod gamepad;
 pub mod input_config;
 pub mod launcher;
+pub mod loader;
 pub mod paths;
 pub mod runtime;
+pub mod runtime_bridge;
 pub mod settings;
 pub mod steam_import;
 pub mod coverart;
@@ -30,12 +32,24 @@ pub fn run() {
             get_runtime_status, install_runtime_cmd, check_runtime_update,
             launch_game, kill_game, dry_run_launch,
             setup_prefix,
-            scan_steam, import_steam_game, find_exe,
+            scan_steam, import_steam_game, import_custom_game, find_exe,
+            preview_loader_import, import_loader_game,
             fetch_cover, import_cover, clear_cover,
             get_settings, save_settings,
             window_minimize, window_maximize, window_close, window_hide, window_show,
+            get_controller_type, get_controller_status,
             check_hidraw_access, install_udev_rules,
         ])
+        .on_window_event(|window, event| {
+            // Controller nav pauses while another window (usually the game)
+            // has focus, so in-game presses can't click launcher buttons.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                use tauri::Manager;
+                if window.label() == "main" {
+                    gamepad::set_window_focused(window.app_handle(), *focused);
+                }
+            }
+        })
         .setup(|app| {
             gamepad::start_monitor(app.handle().clone());
             Ok(())

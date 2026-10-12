@@ -26,7 +26,9 @@ Mythix ships with first-class support for Mythix's new compatibility tool for ga
 
 **Controller Support**
 - Full gamepad navigation — browse your library, launch games, and configure settings without a keyboard
-- System-level guide button monitoring via `/dev/input/js*` — hide and restore the launcher even outside the webview
+- LB / RB switch sections; the d-pad / left stick only ever moves inside the content
+- On-screen keyboard for every text field, plus a controller picker for dropdowns
+- System-level input via `/dev/input/js*` (mapped by kernel event code, merged across devices, paused while a game has focus) — hide and restore the launcher even outside the webview
 - Quick Settings overlay (X button) — change compatibility tool, runtime container, and env toggles with a controller
 - Controller legend in the titlebar showing context-sensitive button hints
 - Connection indicator with live status
@@ -98,10 +100,35 @@ Install them to `~/.steam/root/compatibilitytools.d`, `~/.steam/steam/compatibil
 
 ## Controller Mapping
 
-Mythix supports standard gamepads (Xbox, PlayStation, Switch Pro) via the Gamepad API and system-level `/dev/input/js*` monitoring.
+Mythix reads standard gamepads (Xbox, PlayStation, Switch Pro, generic) from `/dev/input/js*` in the Rust backend and drives the UI from there. Actions are positional, so "A" means the bottom face button on every pad (✕ on PlayStation, B on Switch).
 
 | Button | Action |
 |--------|--------|
+| **LB / RB** | Previous / next section — walks the frame clockwise (Library → Import → Settings → Tools) |
+| **D-pad / Left Stick** | Move focus inside the current section (never onto the frame) |
+| **A** | Launch game · open the keyboard on a text field · open the picker on a dropdown · press buttons |
+| **B** | Back — close the dialog, picker, keyboard, or config panel |
+| **X** | Quick Settings for the focused game |
+| **Y** | Stop the running game |
+| **Start / Options** | Open the focused game's config panel |
+| **Back / View / Create** | Jump to the section's search box with the keyboard open |
+| **LT / RT** | Page up / down |
+| **Right Stick** | Scroll |
+| **Guide / Home** | Hide / Show launcher |
+
+On-screen keyboard (A on any text field):
+- **D-pad** picks a key, **A** types it
+- **X** backspace, **Y** space, **LB/RB** move the cursor
+- **LT** shift, **RT** caps lock, **Start** done, **B** close
+- Physical keyboard and mouse keep working while it's open
+
+Quick Settings overlay (press X on a game):
+- **Left/Right** on Tool or Runtime fields cycles through options
+- **D-pad** navigates between fields and env toggles
+- **A** toggles env variables or activates Save / Save & Launch
+- **B** closes the overlay
+
+--------|--------|
 | **A** | Launch game / Confirm |
 | **B** | Back / Close panel |
 | **X** | Quick Settings (no game running) / Stop game (game running) |
@@ -127,14 +154,22 @@ mythix-launcher/
 │   ├── tauri.js                  # IPC bridge (all invoke() calls)
 │   ├── hooks/
 │   │   ├── useLibrary.js         # Game library CRUD state
-│   │   ├── useGamepad.js         # Gamepad API polling + button edge detection
-│   │   ├── useControllerNav.js   # D-pad grid navigation + global shortcuts
+│   │   ├── useGamepad.js         # Input layers (exclusive per overlay) + controller state
+│   │   ├── useControllerNav.js   # Base controller layer: sections, focus, A/B/X/Y…
 │   │   ├── useRuntime.js         # Steam Runtime install/status
 │   │   ├── useCoverUrl.js        # Cover art URL resolution
 │   │   ├── useMaximized.js       # Window maximize state tracking
 │   │   └── useToast.js           # Notification toasts
+│   ├── controller/
+│   │   ├── bus.js                # Single gamepad:action listener, dedupe, repeat, layers
+│   │   ├── focus.js              # Scoped spatial navigation (grid/list index math)
+│   │   ├── overlays.js           # Keyboard / picker state + React-safe value setters
+│   │   ├── sections.js           # LB/RB section order
+│   │   └── glyphs.js             # Button labels per controller family
 │   └── components/
 │       ├── TitleBar.jsx          # Custom titlebar + controller legend
+│       ├── OnScreenKeyboard.jsx  # Controller keyboard for text fields
+│       ├── OptionPicker.jsx      # Controller picker for <select>
 │       ├── NavRail.jsx           # Sidebar navigation
 │       ├── LibraryView.jsx       # Game grid/list + spotlight hero
 │       ├── GameCard.jsx          # Game tile with cover art
@@ -155,8 +190,9 @@ mythix-launcher/
         ├── commands.rs           # Tauri IPC command handlers
         ├── game_library.rs       # Library persistence, CRUD, compat tool scanner
         ├── launcher.rs           # Prefix setup, env assembly, process spawning
-        ├── gamepad.rs            # System-level /dev/input/js* guide button monitor
-        ├── runtime.rs            # Steam Runtime download + management
+        ├── gamepad.rs            # /dev/input/js* monitor → merged gamepad:action events
+        ├── runtime.rs            # Steam Runtime download + management, mythix-shim
+        ├── runtime_bridge.rs     # Host libraries a tool needs but the runtime lacks
         ├── steam_import.rs       # Steam library detection + prefix cloning
         ├── coverart.rs           # Steam CDN cover art fetcher
         ├── settings.rs           # Global settings persistence
@@ -171,11 +207,12 @@ mythix-launcher/
 
 | What | Where |
 |------|-------|
-| Game library | `~/.local/share/mythix-launcher/library.json` |
-| Global settings | `~/.local/share/mythix-launcher/settings.json` |
-| Cover art cache | `~/.local/share/mythix-launcher/covers/` |
+| Game library | `~/.local/share/mythix/library.json` |
+| Global settings | `~/.local/share/mythix/settings.json` |
+| Cover art cache | `~/.local/share/mythix/covers/` |
 | Game prefixes | `~/.mythix/gamedata/<game_id>/` |
-| Steam Runtime | `~/.local/share/mythix-launcher/runtime/` |
+| Steam Runtime | `~/.local/share/mythix/steamrt{2,3,4}/` |
+| Runtime library bridge | `~/.local/share/mythix/runtime-bridge/<runtime>/` |
 | Launch log | `/tmp/mythix_launch.log` |
 
 ---
@@ -193,6 +230,12 @@ mythix-launcher/
 | `use_runtime` | — | Auto (toolmanifest), force on, force off |
 | `env_overrides` | injected at launch | Any KEY=VALUE pairs |
 | `launch_args` | appended to command | Extra arguments after the exe |
+
+### Runtime container: host library bridge
+
+Wine builds made on a desktop distro can link libraries the Steam Linux Runtime doesn't ship — Mythix Neutron's `ntdll.so` needs `libunwind.so.8`, `winewayland.so` needs `libxkbregistry.so.0`. Inside the container Wine then dies with a misleading `could not load ntdll.so`. Before every container launch the launcher reads the tool's native binaries, checks each needed library against the runtime's own file list (`*_platform_*/usr-mtree.txt.gz`), and copies the host's copy of anything missing into `~/.local/share/mythix/runtime-bridge/<runtime>/`; `mythix-shim` appends that directory to `LD_LIBRARY_PATH` inside the container. Only libraries the runtime lacks are bridged, so the runtime's own libraries are never shadowed.
+
+The launch debug dump has a **Runtime Library Bridge** section listing what was bridged and anything still missing. `MYTHIX_RUNTIME_BRIDGE=0` (global or per game) turns it off. Launches that don't use the container get `NEUTRON_NO_CONTAINER=1`, so Neutron builds that wrap themselves into Steam's runtime leave that decision to the per-game setting.
 
 ---
 

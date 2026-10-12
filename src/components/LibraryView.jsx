@@ -16,23 +16,15 @@ function formatPlaytime(secs) {
 }
 
 
-function GameListItem({ game, selected, onSelect, onLaunch, onConfigure, controllerFocused }) {
+function GameListItem({ game, selected, onSelect, onLaunch, onConfigure }) {
   const coverUrl = useCoverUrl(game.cover_art);
   const initial = game.name?.[0]?.toUpperCase() ?? "?";
   const playtime = formatPlaytime(game.playtime_secs) ?? "Never played";
-  const itemRef = React.useRef(null);
-
-  React.useEffect(() => {
-    if (controllerFocused && itemRef.current) {
-      itemRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [controllerFocused]);
-
   // Format store platform name cleanly
   const storeRaw = game.config?.store || "";
   const storeLabel = storeRaw ? (storeRaw.charAt(0).toUpperCase() + storeRaw.slice(1)) : "Custom";
   const storeClass = `store-badge store-badge--${storeRaw.toLowerCase() || "custom"}`;
-  const itemClass = `game-list__item game-list__item--${storeRaw.toLowerCase() || "custom"} ${selected ? "selected" : ""} ${controllerFocused ? "controller-focus" : ""}`;
+  const itemClass = `game-list__item game-list__item--${storeRaw.toLowerCase() || "custom"} ${selected ? "selected" : ""}`;
 
   // Environment variables and launch arguments count
   const envCount = Object.keys(game.config?.env_overrides || {}).length;
@@ -76,8 +68,9 @@ function GameListItem({ game, selected, onSelect, onLaunch, onConfigure, control
 
   return (
     <div
-      ref={itemRef}
       className={itemClass}
+      data-game-id={game.id}
+      tabIndex={0}
       onClick={() => onSelect(game)}
     >
       <div className="game-list__cell game-list__cell--main" style={{ flex: 1, gap: 16 }}>
@@ -214,9 +207,7 @@ export default function LibraryView({
   onLaunch,
   toast,
   maximized,
-  controllerIndex = -1,
-  controllerSelected,
-  onControllerSelect,
+  controllerActive,
   runningGame,
   onKillGame,
 }) {
@@ -409,7 +400,6 @@ export default function LibraryView({
                     onSelect={setSelected}
                     onLaunch={handleLaunch}
                     onConfigure={setSelected}
-                    controllerFocused={controllerIndex === i}
                   />
                 ))}
               </div>
@@ -425,7 +415,6 @@ export default function LibraryView({
                     onSelect={setSelected}
                     onLaunch={handleLaunch}
                     onConfigure={setSelected}
-                    controllerFocused={controllerIndex === i}
                   />
                 ))}
               </div>

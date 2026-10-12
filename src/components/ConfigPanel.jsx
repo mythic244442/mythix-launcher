@@ -27,6 +27,11 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
   const [metaName, setMetaName] = useState("");
   const [metaExe, setMetaExe]   = useState("");
   const [metaNotes, setMetaNotes] = useState("");
+  // Raw text for the launch-args box. Re-deriving it from the parsed array on
+  // every keystroke ate the space you just typed, so multi-arg strings were
+  // impossible to enter (with a keyboard or the controller one).
+  const [argsText, setArgsText] = useState("");
+  const [wrapText, setWrapText] = useState("");
 
   useEffect(() => {
     if (!game) return;
@@ -34,6 +39,8 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
     setMetaName(game.name || "");
     setMetaExe(game.exe_path || "");
     setMetaNotes(game.notes || "");
+    setArgsText((game.config?.launch_args ?? []).join(" "));
+    setWrapText((game.config?.wrappers ?? []).join(" "));
     setDryRun(null); setShowDryRun(false);
   }, [game?.id, game?.exe_path]);
 
@@ -75,13 +82,13 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
   const TABS = [{ id:"general", label:"General" },{ id:"env", label:"Env Vars" },{ id:"advanced", label:"Advanced" }];
 
   return (
-    <div className="config-panel">
+    <div className="config-panel" data-panel-game-id={game.id}>
       <div className="config-panel__header">
         <div style={{ flex:1 }}>
           <div className="config-panel__title">{metaName || game.name}</div>
           <div style={{ fontFamily:"var(--font-mono)", fontSize:15, color:"var(--text-3)", marginTop:2 }}>{cfg.game_id}</div>
         </div>
-        <button className="btn btn--ghost btn--icon btn--sm" onClick={onClose}>✕</button>
+        <button className="btn btn--ghost btn--icon btn--sm" onClick={onClose} data-nav-close title="Close">✕</button>
       </div>
 
       <div style={{ display:"flex", borderBottom:"2px solid var(--border)", padding:"0 18px", gap:2, flexShrink:0 }}>
@@ -306,9 +313,25 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
             <div className="form-group">
               <label className="form-label">Extra args</label>
               <input className="form-input form-input--mono"
-                value={(cfg.launch_args ?? []).join(" ")}
-                onChange={(e) => patch("launch_args", e.target.value.split(" ").filter(Boolean))}
+                value={argsText}
+                onChange={(e) => {
+                  setArgsText(e.target.value);
+                  patch("launch_args", e.target.value.split(" ").filter(Boolean));
+                }}
                 placeholder="-windowed -nosound" spellCheck={false} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Wrapper command</label>
+              <input className="form-input form-input--mono"
+                value={wrapText}
+                onChange={(e) => {
+                  setWrapText(e.target.value);
+                  patch("wrappers", e.target.value.split(" ").filter(Boolean));
+                }}
+                placeholder="prime-run   ·   gamescope -f --" spellCheck={false} />
+              <div style={{ fontSize:11, color:"var(--text-2)", marginTop:4 }}>
+                Runs in front of the whole launch command (outside the runtime container).
+              </div>
             </div>
           </div>
         </>}

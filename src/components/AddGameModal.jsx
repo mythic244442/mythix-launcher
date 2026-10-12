@@ -32,7 +32,7 @@ export default function AddGameModal({ onAdd, onClose }) {
       <div className="modal">
         <div className="modal__header">
           <span className="modal__title">Add Game</span>
-          <button className="modal__close" onClick={onClose}>✕</button>
+          <button className="modal__close" onClick={onClose} data-nav-close>✕</button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="form-group">

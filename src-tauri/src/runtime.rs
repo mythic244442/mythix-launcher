@@ -87,6 +87,16 @@ impl RuntimeVariant {
         }
     }
 
+    /// Inverse of `repo_dir()` (also accepts the codenames).
+    pub fn from_repo_dir(name: &str) -> Option<Self> {
+        match name {
+            "steamrt3" | "sniper"  => Some(Self::Sniper),
+            "steamrt2" | "soldier" => Some(Self::Soldier),
+            "steamrt4"             => Some(Self::SteamRT4),
+            _ => None,
+        }
+    }
+
     /// Derive the variant from a `require_tool_appid` value in toolmanifest.vdf.
     pub fn from_appid(appid: &str) -> Option<Self> {
         match appid {
@@ -441,33 +451,53 @@ async fn fetch_text(client: &Client, url: &str) -> Result<String, LauncherError>
 }
 
 // ── Shim ─────────────────────────────────────────────────────────────────────
-// Creates the mythix shim. A tiny shell script that fixes DISPLAY
-// for gamescope before exec'ing its arguments.
+// mythix-shim runs *inside* the runtime container, right before the tool:
+//  * fixes DISPLAY for gamescope sessions,
+//  * appends MYTHIX_RUNTIME_LIBRARY_PATH (host libraries the launcher bridged
+//    in, see runtime_bridge.rs) to LD_LIBRARY_PATH — pressure-vessel never
+//    forwards the host's LD_LIBRARY_PATH, so this is the only way in.
+// The launcher owns this file and rewrites it whenever the content differs.
+
+const SHIM_SCRIPT: &str = r#"#!/bin/sh
+# mythix-shim: written by Mythix Launcher (local edits get replaced).
+# Runs inside the Steam Linux Runtime container, right before the tool.
+
+if [ "${XDG_CURRENT_DESKTOP}" = "gamescope" ] || [ "${XDG_SESSION_DESKTOP}" = "gamescope" ]; then
+    if [ "${STEAM_MULTIPLE_XWAYLANDS}" = "1" ] && [ -z "${DISPLAY}" ]; then
+        export DISPLAY=":1"
+    fi
+fi
+
+# Host libraries this Wine build links against that the runtime doesn't ship.
+# Appended, so the runtime's own libraries and pressure-vessel's overrides
+# always come first.
+if [ -n "${MYTHIX_RUNTIME_LIBRARY_PATH-}" ]; then
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+${LD_LIBRARY_PATH}:}${MYTHIX_RUNTIME_LIBRARY_PATH}"
+fi
+
+exec "$@"
+"#;
 
 pub fn ensure_shim() -> Result<(), LauncherError> {
+    use std::os::unix::fs::PermissionsExt;
     let path = shim_path();
-    if path.is_file() {
+    let up_to_date = fs::read_to_string(&path).is_ok_and(|s| s == SHIM_SCRIPT)
+        && fs::metadata(&path).is_ok_and(|m| m.permissions().mode() & 0o100 != 0);
+    if up_to_date {
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&parent).map_err(|e| LauncherError::Io(e.to_string()))?;
+    // Write-then-rename: a game that's starting right now may be reading the
+    // old copy, and sh reads scripts as it goes.
+    let tmp = parent.join(format!(".mythix-shim.{}.tmp", std::process::id()));
+    let result = fs::write(&tmp, SHIM_SCRIPT)
+        .and_then(|_| fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)))
+        .and_then(|_| fs::rename(&tmp, &path));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&tmp);
+        return Err(LauncherError::Io(format!("write {}: {e}", path.display())));
     }
-    let content = "#!/bin/sh\n\
-        \n\
-        if [ \"${XDG_CURRENT_DESKTOP}\" = \"gamescope\" ] || \
-            [ \"${XDG_SESSION_DESKTOP}\" = \"gamescope\" ]; then\n\
-            if [ \"${STEAM_MULTIPLE_XWAYLANDS}\" = \"1\" ]; then\n\
-                if [ -z \"${DISPLAY}\" ]; then\n\
-                    export DISPLAY=\":1\"\n\
-                fi\n\
-            fi\n\
-        fi\n\
-        \n\
-        exec \"$@\"\n";
-    fs::write(&path, content).map_err(|e| LauncherError::Io(e.to_string()))?;
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-        .map_err(|e| LauncherError::Io(e.to_string()))?;
     Ok(())
 }
 

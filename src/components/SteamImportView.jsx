@@ -1,9 +1,16 @@
 // components/SteamImportView.jsx
-// Scans Steam libraries and lets users import games with prefix cloning.
+// Scans Steam libraries and imports games. Two independent actions per game:
+//  • Prefix — bring in a copy of Steam's prefix. Adds the game if it isn't in the
+//    library yet (launching the game exe directly), or gives the existing entry
+//    Steam's prefix.
+//  • Loader — build a mythix-loader profile and launch the game from where it's
+//    installed. Never touches prefixes: an existing entry keeps its own, a new one
+//    gets a fresh prefix.
 
 import React, { useState, useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../tauri.js";
+import CustomImportModal from "./CustomImportModal.jsx";
 
 function formatSize(bytes) {
   if (!bytes || bytes <= 0) return "—";
@@ -14,22 +21,35 @@ function formatSize(bytes) {
   return `${val.toFixed(1)} ${units[i]}`;
 }
 
-const STATUS_COLORS = {
-  ready:    "var(--lime)",
-  steam:    "var(--amber)",
-  none:     "var(--coral)",
-  imported: "var(--sky)",
+const BADGE_TONES = {
+  loader: { color:"var(--lime)",  bg:"rgba(180,167,214,0.12)", border:"rgba(180,167,214,0.3)" },
+  sky:    { color:"var(--sky)",   bg:"rgba(91,200,255,0.12)",  border:"rgba(91,200,255,0.3)" },
+  amber:  { color:"var(--amber)", bg:"rgba(255,187,56,0.12)",  border:"rgba(255,187,56,0.3)" },
+  coral:  { color:"var(--coral)", bg:"rgba(255,95,95,0.08)",   border:"rgba(255,95,95,0.2)" },
 };
+
+function Badge({ tone, children }) {
+  const t = BADGE_TONES[tone];
+  return (
+    <span style={{
+      fontFamily:"var(--font-mono)", fontSize:9, fontWeight:700,
+      letterSpacing:"0.08em", textTransform:"uppercase", whiteSpace:"nowrap",
+      color:t.color, background:t.bg, border:`1px solid ${t.border}`,
+      borderRadius:4, padding:"2px 6px",
+    }}>{children}</span>
+  );
+}
 
 export default function SteamImportView({ toast, onRefreshLibrary }) {
   const [games, setGames]         = useState([]);
   const [loading, setLoading]     = useState(true);
-  const [importing, setImporting] = useState(null); // appid being imported
+  const [importing, setImporting] = useState(null); // { appid, kind: "prefix" | "loader" }
   const [importStatus, setStatus] = useState("");  // live status from backend
   const [search, setSearch]       = useState("");
   const unlistenRef               = useRef(null);
   const [compatTools, setTools]   = useState([]);
   const [selectedTool, setTool]   = useState("");
+  const [showCustom, setShowCustom] = useState(false); // custom-folder import modal
 
   async function scan() {
     setLoading(true);
@@ -45,6 +65,11 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
     }
   }
 
+  // Re-read library state for every row without blanking the list.
+  async function refreshQuiet() {
+    try { setGames(await api.scanSteam()); } catch { /* keep what we have */ }
+  }
+
   useEffect(() => { scan(); }, []);
 
   // Listen for import progress events from the Rust backend
@@ -56,28 +81,50 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
     return () => { active = false; unlistenRef.current?.(); };
   }, []);
 
-  async function handleImport(game) {
-    setImporting(game.appid);
-    setStatus("Starting import…");
+  async function runImport(game, kind, startMsg, doImport, okMsg) {
+    setImporting({ appid: game.appid, kind });
+    setStatus(startMsg);
     try {
-      await api.importSteamGame({
+      await doImport();
+      toast?.(okMsg, "success");
+      onRefreshLibrary?.();
+      await refreshQuiet();
+    } catch (e) {
+      toast?.(`${kind === "loader" ? "Loader" : "Import"} failed: ${e}`, "error");
+    } finally {
+      setImporting(null);
+      setTimeout(() => setStatus(""), 3000);
+    }
+  }
+
+  // Prefix: copy Steam's prefix in. Adds the game, or gives its entry Steam's prefix.
+  function handleImport(game) {
+    const inLibrary = game.already_imported;
+    return runImport(game, "prefix", inLibrary ? "Importing Steam's prefix…" : "Starting import…",
+      () => api.importSteamGame({
         appid: game.appid,
         name: game.name,
         installPath: game.install_path,
         steamPrefix: game.steam_prefix,
         protonPath: selectedTool || null,
-      });
-      toast?.(`Imported ${game.name}`, "success");
-      onRefreshLibrary?.();
-      setGames((prev) => prev.map((g) =>
-        g.appid === game.appid ? { ...g, already_imported: true } : g
-      ));
-    } catch (e) {
-      toast?.(`Import failed: ${e}`, "error");
-    } finally {
-      setImporting(null);
-      setTimeout(() => setStatus(""), 3000);
-    }
+      }),
+      inLibrary ? `${game.name} now uses a copy of Steam's prefix` : `Imported ${game.name}`);
+  }
+
+  // Loader: build (or rebuild) the mythix-loader profile and launch through it.
+  // The game keeps whatever prefix it has; a new entry gets a fresh one.
+  function handleLoaderImport(game) {
+    const okMsg = game.uses_loader ? `Rebuilt ${game.name}'s loader profile`
+      : game.already_imported ? `${game.name} now launches through the loader`
+      : `Added ${game.name} via the loader`;
+    return runImport(game, "loader", "Building loader profile…",
+      () => api.importLoaderGame({
+        installPath: game.install_path,
+        appid: game.appid,
+        name: game.name,
+        protonPath: selectedTool || null,
+      }),
+      okMsg);
   }
 
   const filtered = search.trim()
@@ -87,6 +134,7 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
 
   const withPrefix = games.filter((g) => g.steam_prefix).length;
   const imported = games.filter((g) => g.already_imported).length;
+  const viaLoader = games.filter((g) => g.already_imported && g.uses_loader).length;
 
   return (
     <div className="content" style={{ overflow:"hidden", display:"flex", flexDirection:"column" }}>
@@ -101,6 +149,9 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
             placeholder="Search…" value={search}
             onChange={(e) => setSearch(e.target.value)} />
         </div>
+        <button className="btn btn--primary btn--sm" onClick={() => setShowCustom(true)}>
+          ＋ From folder
+        </button>
         <button className="btn btn--secondary btn--sm" onClick={scan} disabled={loading}>
           {loading ? "Scanning…" : "↻ Rescan"}
         </button>
@@ -113,8 +164,9 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
         background:"var(--bg-2)",
       }}>
         <span><strong style={{color:"var(--text-0)"}}>{games.length}</strong> games found</span>
-        <span><span style={{color:"var(--amber)"}}>●</span> {withPrefix} have prefixes</span>
-        <span><span style={{color:"var(--sky)"}}>●</span> {imported} already imported</span>
+        <span><span style={{color:"var(--amber)"}}>●</span> {withPrefix} have Steam prefixes</span>
+        <span><span style={{color:"var(--sky)"}}>●</span> {imported} in library</span>
+        <span><span style={{color:"var(--lime)"}}>●</span> {viaLoader} via loader</span>
 
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
           <span style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--text-3)" }}>Default tool:</span>
@@ -168,19 +220,40 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
         ) : (
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
             {filtered.map((game) => {
-              const hasPrefix = !!game.steam_prefix;
-              const isImported = game.already_imported;
-              const isImporting = importing === game.appid;
+              const hasPrefix   = !!game.steam_prefix;          // Steam has a prefix to copy
+              const inLibrary   = game.already_imported;
+              const viaLoader   = inLibrary && game.uses_loader;
+              const prefixReady = inLibrary && game.prefix_ready;  // entry's prefix exists on disk
+              const busy        = importing?.appid === game.appid;
+              const accent = viaLoader ? "var(--lime)" : inLibrary ? "var(--sky)"
+                : hasPrefix ? "var(--amber)" : "var(--border)";
+
+              // Prefix button: hidden only when there's nothing to bring in for an
+              // entry that already exists.
+              const showPrefix = hasPrefix || !inLibrary;
+              const prefixLabel = busy && importing.kind === "prefix" ? "Importing…"
+                : prefixReady && hasPrefix ? "Prefix ✓"
+                : hasPrefix ? "Prefix" : "Import";
+              const prefixTitle = prefixReady
+                ? "This game already has a prefix"
+                : !hasPrefix ? "Add the game with a fresh prefix (launches the game exe directly)"
+                : inLibrary ? "Give this game a copy of Steam's prefix"
+                : "Add the game with a copy of Steam's prefix (launches the game exe directly)";
+
+              const loaderLabel = busy && importing.kind === "loader" ? "Building…"
+                : viaLoader ? "Rebuild loader" : "Loader";
+              const loaderTitle = viaLoader
+                ? "Rebuild this game's mythix-loader profile"
+                : inLibrary
+                  ? "Launch this game through a mythix-loader profile — keeps its prefix"
+                  : "Make a mythix-loader profile and add the game with a fresh prefix — launches from where it's installed";
 
               return (
                 <div key={game.appid} style={{
                   background:"var(--bg-2)", border:"1px solid var(--border)",
-                  borderLeft: isImported ? "3px solid var(--sky)"
-                    : hasPrefix ? "3px solid var(--amber)"
-                    : "3px solid var(--border)",
+                  borderLeft:`3px solid ${accent}`,
                   borderRadius:"var(--r-lg)", padding:"12px 16px",
                   display:"flex", alignItems:"center", gap:14,
-                  opacity: isImported ? 0.6 : 1,
                   transition:"all 0.15s",
                 }}>
                   {/* Game info */}
@@ -206,43 +279,35 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
                     </div>
                   </div>
 
-                  {/* Prefix status */}
-                  <div style={{ textAlign:"right", flexShrink:0, minWidth:100 }}>
-                    {isImported ? (
-                      <span style={{
-                        fontFamily:"var(--font-mono)", fontSize:9, fontWeight:700,
-                        letterSpacing:"0.08em", textTransform:"uppercase",
-                        color:STATUS_COLORS.imported,
-                        background:"rgba(91,200,255,0.12)", border:"1px solid rgba(91,200,255,0.3)",
-                        borderRadius:4, padding:"2px 6px",
-                      }}>imported</span>
-                    ) : hasPrefix ? (
-                      <span style={{
-                        fontFamily:"var(--font-mono)", fontSize:9, fontWeight:700,
-                        letterSpacing:"0.08em", textTransform:"uppercase",
-                        color:STATUS_COLORS.steam,
-                        background:"rgba(255,187,56,0.12)", border:"1px solid rgba(255,187,56,0.3)",
-                        borderRadius:4, padding:"2px 6px",
-                      }}>has prefix</span>
-                    ) : (
-                      <span style={{
-                        fontFamily:"var(--font-mono)", fontSize:9, fontWeight:700,
-                        letterSpacing:"0.08em", textTransform:"uppercase",
-                        color:STATUS_COLORS.none,
-                        background:"rgba(255,95,95,0.08)", border:"1px solid rgba(255,95,95,0.2)",
-                        borderRadius:4, padding:"2px 6px",
-                      }}>no prefix</span>
-                    )}
+                  {/* Status: library state on top, Steam's prefix below */}
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end",
+                    gap:4, flexShrink:0, minWidth:100 }}>
+                    {inLibrary && <Badge tone={viaLoader ? "loader" : "sky"}>{viaLoader ? "via loader" : "in library"}</Badge>}
+                    {hasPrefix ? <Badge tone="amber">steam prefix</Badge> : <Badge tone="coral">no steam prefix</Badge>}
                   </div>
 
-                  {/* Import button */}
+                  {/* Prefix: bring in Steam's prefix (adds the game if needed) */}
+                  {showPrefix && (
+                    <button
+                      className={`btn ${prefixReady ? "btn--ghost" : hasPrefix ? "btn--primary" : "btn--secondary"} btn--sm`}
+                      onClick={() => handleImport(game)}
+                      disabled={busy || prefixReady}
+                      title={prefixTitle}
+                      style={{ flexShrink:0, minWidth:84 }}
+                    >
+                      {prefixLabel}
+                    </button>
+                  )}
+
+                  {/* Loader: profile in ~/.mythix/loader_profiles, launch in place */}
                   <button
-                    className={`btn ${isImported ? "btn--ghost" : hasPrefix ? "btn--primary" : "btn--secondary"} btn--sm`}
-                    onClick={() => handleImport(game)}
-                    disabled={isImported || isImporting}
-                    style={{ flexShrink:0, minWidth:90 }}
+                    className={`btn ${viaLoader ? "btn--ghost" : "btn--secondary"} btn--sm`}
+                    onClick={() => handleLoaderImport(game)}
+                    disabled={busy}
+                    title={loaderTitle}
+                    style={{ flexShrink:0, minWidth:84 }}
                   >
-                    {isImporting ? "Importing…" : isImported ? "Done" : hasPrefix ? "Import" : "Import (no pfx)"}
+                    {loaderLabel}
                   </button>
                 </div>
               );
@@ -250,6 +315,14 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
           </div>
         )}
       </div>
+
+      {showCustom && (
+        <CustomImportModal
+          toast={toast}
+          onClose={() => setShowCustom(false)}
+          onImported={() => { refreshQuiet(); onRefreshLibrary?.(); }}
+        />
+      )}
     </div>
   );
 }

@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
+import { neighborSection } from "../controller/sections.js";
+import { glyphsFor } from "../controller/glyphs.js";
 
 const NAV_ITEMS = [
   { id: "library",  label: "Library",            icon: "⊞" },
@@ -49,27 +51,36 @@ function NavDropdown({ active, onNavigate }) {
   );
 }
 
-function NavBtn({ id, icon, label, active, onNavigate, className, focused }) {
+// The frame buttons are mouse targets and section indicators. They carry
+// data-nav-skip so controller focus never lands on them — LB/RB switch sections.
+function NavBtn({ id, icon, label, active, onNavigate, className, bumper }) {
   return (
     <button
-      className={`nav-frame__btn ${className || ""} ${active === id ? "active" : ""} ${focused ? "controller-focus" : ""}`}
+      data-nav-skip
+      className={`nav-frame__btn ${className || ""} ${active === id ? "active" : ""}`}
       onClick={() => onNavigate(id)}
     >
       <span className="nav-frame__icon">{icon}</span>
       <span className="nav-frame__label">{label}</span>
+      {bumper && <span className="nav-frame__bumper">{bumper}</span>}
     </button>
   );
 }
 
-export default function NavRail({ active, onNavigate, maximized, controllerZone, children }) {
+export default function NavRail({ active, onNavigate, maximized, controllerActive, controllerType, children }) {
   if (maximized) {
+    // Show which bumper leads where while a controller is in use.
+    const g = glyphsFor(controllerType);
+    const prev = controllerActive ? neighborSection(active, -1) : null;
+    const next = controllerActive ? neighborSection(active, 1) : null;
+    const bumper = (id) => (id === prev ? g.lb : id === next ? g.rb : null);
     return (
       <div className="nav-spiral">
-        <NavBtn id="library"  icon="⊞" label="Library"  active={active} onNavigate={onNavigate} className="nav-spiral__top"    focused={controllerZone === "library"} />
-        <NavBtn id="steam"    icon="⇓" label="Import"   active={active} onNavigate={onNavigate} className="nav-spiral__right"  focused={controllerZone === "steam"} />
-        <NavBtn id="tools"    icon="⚙" label="Tools"    active={active} onNavigate={onNavigate} className="nav-spiral__left"   focused={controllerZone === "tools"} />
-        <NavBtn id="settings" icon="◈" label="Settings" active={active} onNavigate={onNavigate} className="nav-spiral__bottom" focused={controllerZone === "settings"} />
-        <div className={`nav-spiral__content ${controllerZone === "content" ? "controller-focus-content" : ""}`}>{children}</div>
+        <NavBtn id="library"  icon="⊞" label="Library"  active={active} onNavigate={onNavigate} className="nav-spiral__top"    bumper={bumper("library")} />
+        <NavBtn id="steam"    icon="⇓" label="Import"   active={active} onNavigate={onNavigate} className="nav-spiral__right"  bumper={bumper("steam")} />
+        <NavBtn id="tools"    icon="⚙" label="Tools"    active={active} onNavigate={onNavigate} className="nav-spiral__left"   bumper={bumper("tools")} />
+        <NavBtn id="settings" icon="◈" label="Settings" active={active} onNavigate={onNavigate} className="nav-spiral__bottom" bumper={bumper("settings")} />
+        <div className="nav-spiral__content">{children}</div>
       </div>
     );
   }

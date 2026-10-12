@@ -9,6 +9,8 @@ const SettingsView = lazy(() => import("./components/SettingsView.jsx"));
 import RuntimeSetup from "./components/RuntimeSetup.jsx";
 import ToastContainer from "./components/ToastContainer.jsx";
 import QuickSettings from "./components/QuickSettings.jsx";
+import OnScreenKeyboard from "./components/OnScreenKeyboard.jsx";
+import OptionPicker from "./components/OptionPicker.jsx";
 import { useLibrary } from "./hooks/useLibrary.js";
 import { useRuntime, DEFAULT_VARIANT } from "./hooks/useRuntime.js";
 import { useToast } from "./hooks/useToast.js";
@@ -69,18 +71,17 @@ export default function App() {
     api.windowHide();
   }, []);
 
-  const { zone, gridIndex, controllerActive, controllerType } = useControllerNav({
+  // Base controller layer. Overlays (quick settings, keyboard, picker) register
+  // their own higher-priority layers, so they mute this one while open.
+  const { controllerActive, controllerType } = useControllerNav({
     view,
     onNavigate: setView,
     games,
-    onSelectGame: setSelectedGame,
     onLaunchGame: handleLaunch,
     onKillGame: handleKillGame,
     onGuide: handleGuide,
     onQuickSettings: setQuickSettingsGame,
-    maximized,
     runningGame,
-    overlayOpen: !!quickSettingsGame,
   });
 
   React.useEffect(() => {
@@ -105,9 +106,10 @@ export default function App() {
           active={view}
           onNavigate={setView}
           maximized={maximized}
-          controllerZone={controllerActive ? zone : null}
+          controllerActive={controllerActive}
+          controllerType={controllerType}
         >
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className="view-loading">Loading…</div>}>
             {view === "library" && (
               <LibraryView
                 games={games}
@@ -118,9 +120,7 @@ export default function App() {
                 onLaunch={handleLaunch}
                 toast={toast}
                 maximized={maximized}
-                controllerIndex={controllerActive && zone === "content" ? gridIndex : -1}
-                controllerSelected={selectedGame}
-                onControllerSelect={setSelectedGame}
+                controllerActive={controllerActive}
                 runningGame={runningGame}
                 onKillGame={handleKillGame}
               />
@@ -142,6 +142,8 @@ export default function App() {
           onLaunch={handleLaunch}
         />
       )}
+      <OptionPicker />
+      <OnScreenKeyboard />
     </div>
   );
 }

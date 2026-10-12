@@ -307,7 +307,17 @@ pub fn scan_steam() -> Result<Vec<SteamGame>, String> {
     let existing_ids: HashSet<String> = lib.games.iter()
         .map(|g| g.config.game_id.clone())
         .collect();
-    steam_import::scan_steam_games(&existing_ids).map_err(|e| e.to_string())
+    let mut games = steam_import::scan_steam_games(&existing_ids).map_err(|e| e.to_string())?;
+    // Library state per game, so the Import tab can offer Prefix and Loader on
+    // their own: does the entry launch through a loader profile, and does its
+    // prefix exist yet?
+    for sg in games.iter_mut().filter(|g| g.already_imported) {
+        if let Some(idx) = library_index(&lib, &sg.appid) {
+            sg.uses_loader = crate::loader::is_loader_stub(&lib.games[idx].exe_path);
+            sg.prefix_ready = prefix_exists(&lib.games[idx]);
+        }
+    }
+    Ok(games)
 }
 
 #[tauri::command]
@@ -323,6 +333,15 @@ pub async fn import_steam_game(
     // so we don't freeze the UI
     tokio::task::spawn_blocking(move || {
         let game_id = format!("mythix-{}", appid);
+
+        // Already in the library (e.g. added through the loader first)? Then this
+        // just gives that entry Steam's prefix instead of adding a duplicate.
+        if game_library::load_library()
+            .map(|lib| library_index(&lib, &appid).is_some())
+            .unwrap_or(false)
+        {
+            return attach_steam_prefix(&appid, &name, steam_prefix.as_deref(), &app);
+        }
 
         // Auto-detect exe
         let exe_path = steam_import::find_game_exe(&install_path)
@@ -374,6 +393,7 @@ pub async fn import_steam_game(
             game_id,
             env_overrides: std::collections::HashMap::new(),
             launch_args: Vec::new(),
+            wrappers: Vec::new(),
             proton_verb: "waitforexitandrun".to_string(),
             prefix_type: game_library::PrefixType::Proton,
             use_runtime: None,
@@ -415,6 +435,298 @@ fn format_bytes(bytes: u64) -> String {
 #[tauri::command]
 pub fn find_exe(install_path: String) -> Option<String> {
     steam_import::find_game_exe(&install_path)
+}
+
+// ── Custom Import (any folder, not just Steam) ────────────────────────────────
+
+/// Import a game from an arbitrary install folder. Resolves the exe (the one the
+/// user picked, else auto-detected), creates a fresh default prefix (made on
+/// first launch, like a Steam import with no prefix), and attaches the chosen
+/// compat tool. No files are moved — the game launches from where it lives.
+#[tauri::command]
+pub async fn import_custom_game(
+    name: String,
+    install_path: String,
+    exe_path: Option<String>,
+    proton_path: Option<String>,
+    app: AppHandle,
+) -> Result<Game, String> {
+    tokio::task::spawn_blocking(move || {
+        let _ = app.emit("import:status", format!("Importing {name}…"));
+
+        // Use the exe the user picked, otherwise auto-detect one under the folder.
+        let exe = match exe_path {
+            Some(e) if !e.trim().is_empty() => e,
+            _ => steam_import::find_game_exe(&install_path)
+                .ok_or_else(|| format!("No .exe found under {install_path}"))?,
+        };
+        if !PathBuf::from(&exe).is_file() {
+            return Err(format!("Executable not found: {exe}"));
+        }
+
+        let settings = crate::settings::load_settings();
+        let id = uuid::Uuid::new_v4().to_string();
+        let game_id = id.replace('-', "")[..8].to_string();
+
+        // Fresh prefix — created on first launch, mirroring a prefix-less import.
+        let prefix_path = if !settings.default_prefix_root.is_empty() {
+            Some(PathBuf::from(&settings.default_prefix_root).join(&game_id))
+        } else {
+            crate::paths::default_prefix_dir(&game_id)
+        };
+
+        // Compat tool: the one chosen in the UI, else the configured default.
+        let proton = proton_path
+            .filter(|p| !p.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                if settings.default_proton_path.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(&settings.default_proton_path))
+                }
+            });
+
+        let config = GameConfig {
+            prefix_path,
+            proton_path: proton,
+            store: "custom".into(),
+            game_id,
+            env_overrides: std::collections::HashMap::new(),
+            launch_args: Vec::new(),
+            wrappers: Vec::new(),
+            proton_verb: settings.default_proton_verb.clone(),
+            prefix_type: game_library::PrefixType::Proton,
+            use_runtime: None,
+            runtime_variant: None,
+        };
+
+        let mut lib = game_library::load_library().map_err(|e| e.to_string())?;
+        let game = Game {
+            id: id.clone(),
+            name,
+            exe_path: PathBuf::from(exe),
+            cover_art: None,
+            config,
+            added_at: format!("unix:{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs()),
+            playtime_secs: 0,
+            notes: String::new(),
+        };
+
+        lib.games.push(game.clone());
+        game_library::save_library(&lib).map_err(|e| e.to_string())?;
+
+        let _ = app.emit("import:status", "Done!".to_string());
+        Ok(game)
+    })
+    .await
+    .map_err(|e| format!("Import thread panicked: {e}"))?
+}
+
+// ── Loader import (Steam games via mythix-loader profiles) ───────────────────
+//
+// Prefix and Loader are separate, composable actions in the Import tab:
+//  • Prefix (import_steam_game) clones Steam's compatdata prefix. It adds the game
+//    when it isn't in the library yet, or gives the existing entry Steam's prefix.
+//  • Loader (import_loader_game) builds the mythix-loader profile and never touches
+//    prefixes: an existing entry keeps its prefix and starts launching through the
+//    loader; a new entry gets a fresh prefix.
+
+/// Index of the library entry for a Steam appid (new `mythix-` or legacy `looni-` id).
+fn library_index(lib: &game_library::Library, appid: &str) -> Option<usize> {
+    let (a, b) = (format!("mythix-{appid}"), format!("looni-{appid}"));
+    lib.games.iter().position(|g| g.config.game_id == a || g.config.game_id == b)
+}
+
+/// Whether a library entry's prefix already exists on disk.
+fn prefix_exists(game: &Game) -> bool {
+    game.config.prefix_path.as_ref().map(|p| p.join("pfx").is_dir()).unwrap_or(false)
+}
+
+fn clean_prefix_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .collect::<String>()
+        .replace("__", "_")
+        .trim_matches('_')
+        .to_string()
+}
+
+/// Give an existing library entry a clone of Steam's compatdata prefix. Refuses to
+/// replace a prefix that already exists on disk.
+fn attach_steam_prefix(
+    appid: &str,
+    name: &str,
+    steam_prefix: Option<&str>,
+    app: &AppHandle,
+) -> Result<Game, String> {
+    let sp = steam_prefix
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("Steam has no prefix for {name} to import."))?;
+    {
+        let lib = game_library::load_library().map_err(|e| e.to_string())?;
+        let idx = library_index(&lib, appid)
+            .ok_or_else(|| format!("{name} isn't in your library."))?;
+        if prefix_exists(&lib.games[idx]) {
+            return Err(format!(
+                "{} already has a prefix — remove the game first if you want Steam's instead.",
+                lib.games[idx].name
+            ));
+        }
+    }
+
+    let _ = app.emit("import:status", format!("Cloning prefix for {name}…"));
+    let cloned = steam_import::clone_steam_prefix(sp, &clean_prefix_name(name))
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("import:status", format!("Prefix cloned ({})", format_bytes(cloned.size_bytes)));
+
+    // Re-read: the clone can take a while.
+    let mut lib = game_library::load_library().map_err(|e| e.to_string())?;
+    let idx = library_index(&lib, appid)
+        .ok_or_else(|| format!("{name} left the library during the import."))?;
+    lib.games[idx].config.prefix_path = Some(PathBuf::from(cloned.prefix_path));
+    let game = lib.games[idx].clone();
+    game_library::save_library(&lib).map_err(|e| e.to_string())?;
+    let _ = app.emit("import:status", "Done!".to_string());
+    Ok(game)
+}
+
+/// Plan a loader import without writing anything: appid, name, the exe from
+/// Steam's own config (plus its launch options, for information), and whether the
+/// game is already in the library.
+#[tauri::command]
+pub async fn preview_loader_import(
+    install_path: String,
+    appid: Option<String>,
+) -> Result<crate::loader::LoaderPlan, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut plan = crate::loader::run_loader(&install_path, appid.as_deref(), true)
+            .map_err(|e| e.to_string())?;
+        if let Ok(lib) = game_library::load_library() {
+            if let Some(idx) = library_index(&lib, &plan.appid) {
+                plan.in_library = true;
+                plan.uses_loader = crate::loader::is_loader_stub(&lib.games[idx].exe_path);
+            }
+        }
+        Ok(plan)
+    })
+    .await
+    .map_err(|e| format!("Loader preview panicked: {e}"))?
+}
+
+/// Build (or rebuild) a mythix-loader profile in ~/.mythix/loader_profiles/ and
+/// point the library at its stub. Never imports or clones a prefix: a game that's
+/// already in the library keeps its prefix, tool, launch args and name; a new one
+/// gets a fresh prefix. The stub starts the real exe from its install folder with
+/// the real steamclient, so Steam must be running.
+#[tauri::command]
+pub async fn import_loader_game(
+    install_path: String,
+    appid: Option<String>,
+    name: Option<String>,
+    proton_path: Option<String>,
+    app: AppHandle,
+) -> Result<Game, String> {
+    tokio::task::spawn_blocking(move || {
+        let _ = app.emit("import:status", "Building loader profile…".to_string());
+        let plan = crate::loader::run_loader(&install_path, appid.as_deref(), false)
+            .map_err(|e| e.to_string())?;
+        if plan.appid.is_empty()
+            || plan.appid == "0"
+            || !plan.appid.chars().all(|c| c.is_ascii_digit())
+        {
+            return Err("Couldn't find this game's Steam appid — enter it manually.".into());
+        }
+
+        let settings = crate::settings::load_settings();
+        let chosen_tool = proton_path
+            .filter(|p| !p.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                if settings.default_proton_path.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(&settings.default_proton_path))
+                }
+            });
+
+        let mut lib = game_library::load_library().map_err(|e| e.to_string())?;
+        let game = apply_loader_profile(&mut lib, &plan, name, chosen_tool, &settings.default_proton_verb);
+        game_library::save_library(&lib).map_err(|e| e.to_string())?;
+
+        let _ = app.emit("import:status", "Done!".to_string());
+        Ok(game)
+    })
+    .await
+    .map_err(|e| format!("Import thread panicked: {e}"))?
+}
+
+/// Point the library at a loader profile (the pure part of `import_loader_game`).
+/// A game that's already in the library switches to the stub and keeps everything
+/// else — prefix, launch args, name, notes, playtime; only a missing tool is filled
+/// in. Otherwise a new entry with a fresh prefix is added. Returns the entry.
+fn apply_loader_profile(
+    lib: &mut game_library::Library,
+    plan: &crate::loader::LoaderPlan,
+    name: Option<String>,
+    chosen_tool: Option<PathBuf>,
+    proton_verb: &str,
+) -> Game {
+    if let Some(idx) = library_index(lib, &plan.appid) {
+        let entry = &mut lib.games[idx];
+        entry.exe_path = PathBuf::from(&plan.stub_path);
+        // The stub lives in the profile dir, so point Neutron at the game's real
+        // install folder (this also shares it into runtime containers).
+        entry.config.env_overrides
+            .insert("STEAM_COMPAT_INSTALL_PATH".to_string(), plan.game_dir.clone());
+        if entry.config.proton_path.is_none() {
+            entry.config.proton_path = chosen_tool;
+        }
+        return entry.clone();
+    }
+
+    // New entry with a fresh prefix (made on first launch). Prefix in the Steam
+    // list can give it a copy of Steam's instead, before it's first launched.
+    let game_id = format!("mythix-{}", plan.appid);
+    let prefix_path = crate::paths::default_prefix_dir(&game_id)
+        .unwrap_or_else(|| PathBuf::from("/tmp").join("gamedata").join(&game_id));
+    let display_name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| plan.name.clone());
+    let mut env_overrides = std::collections::HashMap::new();
+    env_overrides.insert("STEAM_COMPAT_INSTALL_PATH".to_string(), plan.game_dir.clone());
+
+    let game = Game {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: display_name,
+        exe_path: PathBuf::from(&plan.stub_path),
+        cover_art: None,
+        config: GameConfig {
+            prefix_path: Some(prefix_path),
+            proton_path: chosen_tool,
+            store: "steam".into(),
+            game_id,
+            env_overrides,
+            launch_args: Vec::new(),
+            wrappers: Vec::new(),
+            proton_verb: proton_verb.to_string(),
+            prefix_type: game_library::PrefixType::Proton,
+            use_runtime: None,
+            runtime_variant: None,
+        },
+        added_at: format!("unix:{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_secs()),
+        playtime_secs: 0,
+        notes: format!("Loader profile: {}\nLaunches: {}", plan.profile_dir, plan.exe),
+    };
+    lib.games.push(game.clone());
+    game
 }
 
 // ── Cover art ───────────────────────────────────────────────────────────────
@@ -494,6 +806,28 @@ pub fn window_maximize(window: tauri::Window) {
 }
 
 #[tauri::command]
+pub fn get_controller_type() -> String {
+    crate::gamepad::current_type().as_str().to_string()
+}
+
+#[derive(serde::Serialize)]
+pub struct ControllerStatus {
+    pub connected: usize,
+    #[serde(rename = "type")]
+    pub controller_type: String,
+}
+
+/// Connection count + glyph family, for the titlebar indicator (WebKitGTK's
+/// Gamepad API only reports pads after a button press, so it can't be trusted).
+#[tauri::command]
+pub fn get_controller_status() -> ControllerStatus {
+    ControllerStatus {
+        connected: crate::gamepad::connected_count(),
+        controller_type: crate::gamepad::current_type().as_str().to_string(),
+    }
+}
+
+#[tauri::command]
 pub fn window_close(window: tauri::Window) { window.close().ok(); }
 
 #[tauri::command]
@@ -562,5 +896,110 @@ pub fn install_udev_rules() -> Result<String, String> {
         Ok("Udev rules installed. Reconnect your controller.".into())
     } else {
         Err("Failed to install udev rules (authentication cancelled?)".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::LoaderPlan;
+
+    fn entry(game_id: &str, exe: &str, prefix: Option<&str>) -> Game {
+        Game {
+            id: "id-1".into(),
+            name: "My Ready or Not".into(),
+            exe_path: PathBuf::from(exe),
+            cover_art: None,
+            config: GameConfig {
+                prefix_path: prefix.map(PathBuf::from),
+                proton_path: Some(PathBuf::from("/tools/Neutron")),
+                game_id: game_id.into(),
+                launch_args: vec!["-dx11".into()],
+                ..GameConfig::default()
+            },
+            added_at: "unix:0".into(),
+            playtime_secs: 42,
+            notes: "my notes".into(),
+        }
+    }
+
+    fn plan() -> LoaderPlan {
+        LoaderPlan {
+            appid: "1144200".into(),
+            name: "Ready or Not".into(),
+            game_dir: "/lib/steamapps/common/Ready Or Not".into(),
+            exe: "/lib/steamapps/common/Ready Or Not/ReadyOrNot.exe".into(),
+            profile_dir: "/home/u/.mythix/loader_profiles/ready-or-not".into(),
+            stub_path: "/home/u/.mythix/loader_profiles/ready-or-not/readyornot.exe".into(),
+            ..Default::default()
+        }
+    }
+
+    fn library(games: Vec<Game>) -> game_library::Library {
+        game_library::Library { version: 1, games }
+    }
+
+    #[test]
+    fn loader_keeps_an_existing_entrys_prefix_and_settings() {
+        let pfx = "/home/u/.mythix/gamedata/ready_or_not";
+        let mut lib = library(vec![entry("mythix-1144200", "/lib/RoN/ReadyOrNot.exe", Some(pfx))]);
+        let g = apply_loader_profile(&mut lib, &plan(), Some("ignored".into()),
+            Some(PathBuf::from("/tools/Other")), "waitforexitandrun");
+
+        assert_eq!(lib.games.len(), 1, "no duplicate entry");
+        assert_eq!(g.exe_path, PathBuf::from(plan().stub_path), "now launches the stub");
+        assert_eq!(g.config.prefix_path, Some(PathBuf::from(pfx)), "prefix untouched");
+        assert_eq!(g.config.launch_args, vec!["-dx11".to_string()], "launch args kept");
+        assert_eq!(g.config.proton_path, Some(PathBuf::from("/tools/Neutron")), "tool kept");
+        assert_eq!((g.name.as_str(), g.notes.as_str(), g.playtime_secs),
+                   ("My Ready or Not", "my notes", 42), "name/notes/playtime kept");
+        assert_eq!(g.config.env_overrides.get("STEAM_COMPAT_INSTALL_PATH").map(String::as_str),
+                   Some("/lib/steamapps/common/Ready Or Not"));
+        assert_eq!(lib.games[0].exe_path, g.exe_path, "library updated in place");
+    }
+
+    #[test]
+    fn loader_fills_in_a_missing_tool_only() {
+        let mut e = entry("mythix-1144200", "/x.exe", None);
+        e.config.proton_path = None;
+        let mut lib = library(vec![e]);
+        let g = apply_loader_profile(&mut lib, &plan(), None,
+            Some(PathBuf::from("/tools/Neutron-11")), "waitforexitandrun");
+        assert_eq!(g.config.proton_path, Some(PathBuf::from("/tools/Neutron-11")));
+        assert_eq!(g.config.prefix_path, None, "still no prefix forced on it");
+    }
+
+    #[test]
+    fn loader_matches_legacy_looni_ids() {
+        let mut lib = library(vec![entry("looni-1144200", "/x.exe", None)]);
+        apply_loader_profile(&mut lib, &plan(), None, None, "waitforexitandrun");
+        assert_eq!(lib.games.len(), 1);
+        assert_eq!(lib.games[0].exe_path, PathBuf::from(plan().stub_path));
+    }
+
+    #[test]
+    fn loader_adds_a_new_entry_with_a_fresh_prefix() {
+        let mut lib = library(vec![entry("mythix-999", "/other.exe", Some("/pfx/other"))]);
+        let g = apply_loader_profile(&mut lib, &plan(), None,
+            Some(PathBuf::from("/tools/Neutron")), "waitforexitandrun");
+        assert_eq!(lib.games.len(), 2);
+        assert_eq!(g.config.game_id, "mythix-1144200");
+        assert_eq!(g.config.store, "steam");
+        assert_eq!(g.name, "Ready or Not");
+        assert!(g.config.launch_args.is_empty());
+        let pfx = g.config.prefix_path.clone().unwrap();
+        assert!(pfx.ends_with("gamedata/mythix-1144200"), "fresh default prefix, not a clone: {pfx:?}");
+        assert_eq!(lib.games[0].config.prefix_path, Some(PathBuf::from("/pfx/other")), "others untouched");
+    }
+
+    #[test]
+    fn prefix_exists_only_when_the_pfx_dir_is_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut g = entry("mythix-1", "/x.exe", Some(tmp.path().to_str().unwrap()));
+        assert!(!prefix_exists(&g));
+        std::fs::create_dir(tmp.path().join("pfx")).unwrap();
+        assert!(prefix_exists(&g));
+        g.config.prefix_path = None;
+        assert!(!prefix_exists(&g));
     }
 }

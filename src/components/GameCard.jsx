@@ -10,10 +10,9 @@ function formatPlaytime(secs) {
   return "< 1m";
 }
 
-export default function GameCard({ game, selected, onSelect, onLaunch, onConfigure, controllerFocused }) {
+export default function GameCard({ game, selected, onSelect, onLaunch, onConfigure }) {
   const [customCover, setCustomCover] = useState(null);
   const coverUrl = useCoverUrl(game.cover_art);
-  const cardRef = React.useRef(null);
 
   const handleUpload = (event) => {
     const file = event.target.files[0];
@@ -35,8 +34,8 @@ export default function GameCard({ game, selected, onSelect, onLaunch, onConfigu
 
   return (
     <div
-      ref={cardRef}
-      className={`game-card ${selected ? "selected" : ""} ${controllerFocused ? "controller-focus" : ""}`}
+      className={`game-card ${selected ? "selected" : ""}`}
+      data-game-id={game.id}
       onClick={() => onSelect(game)}
       role="button"
       tabIndex={0}

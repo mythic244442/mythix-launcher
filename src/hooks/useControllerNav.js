@@ -1,186 +1,334 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { useGamepad } from "./useGamepad.js";
+// hooks/useControllerNav.js — base controller layer for the whole launcher.
+//
+//   LB / RB        switch section (Library → Import → Settings → Tools, clockwise)
+//   D-pad / stick  move focus inside the content area only — never onto the frame
+//   A              launch game · open keyboard on text fields · picker on selects · press buttons
+//   B              close dialog / config panel
+//   X              quick settings for the focused game
+//   Y              stop the running game
+//   Start          open the focused game's config panel
+//   Back / View    jump to the section's search box with the keyboard open
+//   LT / RT        page up / down
+//   Right stick    scroll
+//   Guide          hide / show (global, handled even over overlays)
 
-const SPIRAL_MAP = {
-  library:  { down: "content", right: "steam",    left: "tools"  },
-  tools:    { up: "library",   right: "content",  down: "settings" },
-  steam:    { up: "library",   left: "content",   down: "settings" },
-  settings: { up: "content",   left: "tools",     right: "steam" },
-};
+import { useEffect, useRef } from "react";
+import { getSnapshot, onGlobal } from "../controller/bus.js";
+import { useGamepadLayer, useControllerState } from "./useGamepad.js";
+import {
+  GAME_ITEM,
+  contentRoot,
+  describeFocus,
+  findScroller,
+  focusElement,
+  getCandidates,
+  getScope,
+  isNavigable,
+  landFocus,
+  moveFocus,
+  noteUserScroll,
+  pageFocus,
+  pickEntry,
+  rescueFocus,
+  scrollParent,
+  topModal,
+} from "../controller/focus.js";
+import { getOverlays, isTextField, openKeyboard, openPicker } from "../controller/overlays.js";
+import { neighborSection } from "../controller/sections.js";
 
-function measureGrid() {
-  const grid = document.querySelector(".game-grid");
-  if (grid && grid.children.length > 0) {
-    const count = grid.children.length;
-    let cols = 1;
-    if (count >= 2) {
-      const firstRect = grid.children[0].getBoundingClientRect();
-      for (let i = 1; i < count; i++) {
-        const rect = grid.children[i].getBoundingClientRect();
-        if (Math.abs(rect.top - firstRect.top) < 10) cols++;
-        else break;
-      }
+const DIRECTIONS = new Set(["up", "down", "left", "right"]);
+const SCROLL_START = 900; // px/s
+const SCROLL_MAX = 2400; // px/s after ~1s held
+
+function waitFor(find, onFound, timeout = 800) {
+  const started = performance.now();
+  const attempt = () => {
+    const el = find();
+    if (el) {
+      onFound(el);
+      return;
     }
-    return { count, cols, mode: "grid" };
-  }
-
-  const list = document.querySelector(".game-list");
-  if (list && list.children.length > 0) {
-    return { count: list.children.length, cols: 1, mode: "list" };
-  }
-
-  return { count: 0, cols: 1, mode: "none" };
+    if (performance.now() - started < timeout) requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
 }
 
-function scrollFocusedIntoView() {
-  requestAnimationFrame(() => {
-    const el = document.querySelector(".game-card.controller-focus, .game-list__item.controller-focus");
-    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  });
+function gameElement(gameId) {
+  return document.querySelector(`.game-card[data-game-id="${CSS.escape(gameId)}"], .game-list__item[data-game-id="${CSS.escape(gameId)}"]`);
 }
 
-export function useControllerNav({ view, onNavigate, games, onSelectGame, onLaunchGame, onKillGame, onGuide, onQuickSettings, maximized, runningGame, overlayOpen }) {
-  const [zone, setZone] = useState("content");
-  const [gridIndex, setGridIndex] = useState(0);
-  const [controllerActive, setControllerActive] = useState(false);
+export function useControllerNav({
+  view,
+  onNavigate,
+  games,
+  onLaunchGame,
+  onKillGame,
+  onGuide,
+  onQuickSettings,
+  runningGame,
+}) {
+  const props = useRef({});
+  props.current = { view, onNavigate, games, onLaunchGame, onKillGame, onGuide, onQuickSettings, runningGame };
 
-  const stateRef = useRef({ zone: "content", gridIndex: 0, runningGame: null, overlayOpen: false });
+  const memory = useRef({}); // section -> focus snapshot to restore when coming back
+  const landToken = useRef(0); // bump to cancel a pending landing
+  const landingUntil = useRef(0); // while a landing is pending, focus rescue stands down
+  const lastActivated = useRef(null); // element A last pressed (to restore after a dialog)
+  const scrolling = useRef(null);
 
-  useEffect(() => { stateRef.current.zone = zone; }, [zone]);
-  useEffect(() => { stateRef.current.gridIndex = gridIndex; }, [gridIndex]);
-  useEffect(() => { stateRef.current.runningGame = runningGame; }, [runningGame]);
-  useEffect(() => { stateRef.current.overlayOpen = overlayOpen; }, [overlayOpen]);
+  const { active: controllerActive, type: controllerType, connected } = useControllerState();
 
-  // Reset grid index when view changes
-  useEffect(() => { setGridIndex(0); stateRef.current.gridIndex = 0; }, [view]);
+  // Guide works everywhere, even with the keyboard or quick settings open.
+  useEffect(() => onGlobal("guide", () => props.current.onGuide?.()), []);
 
+  useEffect(() => () => stopScroll(), []);
+
+  // Focus rescue: when the focused element is removed by a re-render (a game
+  // removed, a button swapped out while loading, a panel closed by mouse), put
+  // focus back near where it was instead of letting it fall to <body>.
   useEffect(() => {
-    function onConnect() { setControllerActive(true); }
-    function onDisconnect() {
-      const gps = navigator.getGamepads?.() ?? [];
-      if (!Array.from(gps).some(Boolean)) setControllerActive(false);
-    }
-    window.addEventListener("gamepadconnected", onConnect);
-    window.addEventListener("gamepaddisconnected", onDisconnect);
-    const gps = navigator.getGamepads?.() ?? [];
-    if (Array.from(gps).some(Boolean)) setControllerActive(true);
+    const last = { el: null, rect: null };
+    const onFocusIn = (e) => {
+      const el = e.target;
+      if (el instanceof HTMLElement && !el.closest("[data-nav-skip]")) {
+        last.el = el;
+        last.rect = el.getBoundingClientRect();
+      }
+    };
+    let queued = false;
+    const observer = new MutationObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        const active = document.activeElement;
+        if (!getSnapshot().active || (active && active !== document.body)) return;
+        if (performance.now() < landingUntil.current) return;
+        if (!last.el || last.el.isConnected) return;
+        const { keyboard, picker } = getOverlays();
+        if (keyboard || picker || !document.hasFocus()) return;
+        rescueFocus(last.rect);
+      });
+    });
+    document.addEventListener("focusin", onFocusIn);
+    observer.observe(document.body, { childList: true, subtree: true });
     return () => {
-      window.removeEventListener("gamepadconnected", onConnect);
-      window.removeEventListener("gamepaddisconnected", onDisconnect);
+      document.removeEventListener("focusin", onFocusIn);
+      observer.disconnect();
     };
   }, []);
 
-  const handleInput = useCallback((action) => {
-    if (!maximized) return;
-    setControllerActive(true);
-
-    if (stateRef.current.overlayOpen) return;
-
-    const cur = stateRef.current;
-
-    // --- Global shortcuts ---
-    if (action === "guide") { onGuide?.(); return; }
-    if ((action === "y" || action === "x") && stateRef.current.runningGame) { onKillGame?.(); return; }
-
-    // --- Spiral button navigation ---
-    if (cur.zone !== "content") {
-      const nav = SPIRAL_MAP[cur.zone];
-      if (action === "a") {
-        onNavigate(cur.zone);
-        setZone("content");
-        setGridIndex(0);
-        stateRef.current.zone = "content";
-        stateRef.current.gridIndex = 0;
+  // ── Landing focus after a section switch ──────────────────────────────────
+  function landWhenReady(targetView) {
+    const token = ++landToken.current;
+    const started = performance.now();
+    landingUntil.current = started + 2500;
+    const attempt = () => {
+      if (token !== landToken.current) return;
+      const scope = getScope();
+      const loading = !!scope.querySelector(".view-loading");
+      const candidates = loading ? [] : getCandidates(scope);
+      const entry = pickEntry(scope, candidates, memory.current[targetView]);
+      const waited = performance.now() - started;
+      // Library cards render a beat after the header; wait for them so we land
+      // on a game rather than the search box.
+      const ready = entry && (targetView !== "library" || entry.matches(GAME_ITEM) || waited > 600);
+      if (ready) {
+        landingUntil.current = 0;
+        focusElement(entry);
         return;
       }
-      if (action === "b") {
-        setZone("content");
-        stateRef.current.zone = "content";
-        return;
-      }
-      const target = nav?.[action];
-      if (target) {
-        setZone(target);
-        stateRef.current.zone = target;
-        if (target === "content") {
-          setGridIndex(0);
-          stateRef.current.gridIndex = 0;
-        }
-      }
+      if (waited < 2500) requestAnimationFrame(attempt);
+      else landingUntil.current = 0;
+    };
+    requestAnimationFrame(attempt);
+  }
+
+  function cancelLanding() {
+    landToken.current++;
+    landingUntil.current = 0;
+  }
+
+  const shownView = useRef(view);
+  useEffect(() => {
+    if (shownView.current === view) return;
+    shownView.current = view;
+    if (controllerActive) landWhenReady(view);
+  }, [view, controllerActive]);
+
+  // ── Right-stick scrolling ─────────────────────────────────────────────────
+  function startScroll(action) {
+    const axis = action === "rs_left" || action === "rs_right" ? "x" : "y";
+    const sign = action === "rs_up" || action === "rs_left" ? -1 : 1;
+    const scope = getScope();
+    const focused = document.activeElement;
+    const el = (scope.contains(focused) && scrollParent(focused, axis)) || findScroller(scope, axis);
+    if (!el) return;
+    stopScroll();
+    noteUserScroll();
+    const state = { action, raf: 0, started: performance.now(), last: performance.now() };
+    const step = (now) => {
+      if (scrolling.current !== state) return;
+      const dt = Math.min(0.05, Math.max(0, now - state.last) / 1000);
+      state.last = now;
+      const ramp = Math.min(1, (now - state.started) / 1000);
+      const delta = sign * (SCROLL_START + (SCROLL_MAX - SCROLL_START) * ramp) * dt;
+      if (axis === "y") el.scrollTop += delta;
+      else el.scrollLeft += delta;
+      state.raf = requestAnimationFrame(step);
+    };
+    scrolling.current = state;
+    state.raf = requestAnimationFrame(step);
+  }
+
+  function stopScroll(action) {
+    const state = scrolling.current;
+    if (!state || (action && state.action !== action)) return;
+    cancelAnimationFrame(state.raf);
+    scrolling.current = null;
+  }
+
+  // ── B: back out of whatever is on top ─────────────────────────────────────
+  function goBack() {
+    const modal = topModal();
+    if (modal) {
+      modal.querySelector("[data-nav-close], .modal__close")?.click();
+      const opener = lastActivated.current;
+      waitFor(
+        () => (!topModal() ? true : null),
+        () => {
+          const active = document.activeElement;
+          if ((!active || active === document.body) && opener?.isConnected && isNavigable(opener)) {
+            focusElement(opener);
+          }
+        },
+      );
       return;
     }
 
-    // --- Content zone navigation ---
-    const { count, cols } = measureGrid();
-
-    if (count > 0) {
-      const idx = Math.min(cur.gridIndex, count - 1);
-
-      if (action === "up") {
-        if (idx < cols) {
-          setZone("library");
-          stateRef.current.zone = "library";
-        } else {
-          const next = idx - cols;
-          setGridIndex(next);
-          stateRef.current.gridIndex = next;
-          scrollFocusedIntoView();
-        }
-      } else if (action === "down") {
-        const next = idx + cols;
-        if (next >= count) {
-          setZone("settings");
-          stateRef.current.zone = "settings";
-        } else {
-          setGridIndex(next);
-          stateRef.current.gridIndex = next;
-          scrollFocusedIntoView();
-        }
-      } else if (action === "left") {
-        if (cols === 1 || idx % cols === 0) {
-          setZone("tools");
-          stateRef.current.zone = "tools";
-        } else {
-          const next = idx - 1;
-          setGridIndex(next);
-          stateRef.current.gridIndex = next;
-          scrollFocusedIntoView();
-        }
-      } else if (action === "right") {
-        if (cols === 1 || (idx + 1) % cols === 0 || idx === count - 1) {
-          setZone("steam");
-          stateRef.current.zone = "steam";
-        } else {
-          const next = idx + 1;
-          setGridIndex(next);
-          stateRef.current.gridIndex = next;
-          scrollFocusedIntoView();
-        }
-      } else if (action === "a") {
-        if (!stateRef.current.runningGame) {
-          onLaunchGame?.(games?.[idx]?.id);
-        }
-      } else if (action === "x") {
-        const g = games?.[idx];
-        if (g) onQuickSettings?.(g);
-      } else if (action === "b") {
-        onSelectGame?.(null);
+    const panel = document.querySelector(".config-panel");
+    if (panel) {
+      const gameId = panel.dataset.panelGameId;
+      const focusWasInPanel = panel.contains(document.activeElement);
+      const close = panel.querySelector("[data-nav-close]") || panel.querySelector(".config-panel__header .btn--ghost");
+      close?.click();
+      if (gameId) {
+        waitFor(
+          () => (!document.querySelector(".config-panel") ? gameElement(gameId) : null),
+          (card) => {
+            const active = document.activeElement;
+            if (focusWasInPanel || !active || active === document.body) focusElement(card);
+          },
+        );
       }
-    } else {
-      // No items — just escape to spiral
-      if (action === "up")    { setZone("library");  stateRef.current.zone = "library"; }
-      if (action === "down")  { setZone("settings"); stateRef.current.zone = "settings"; }
-      if (action === "left")  { setZone("tools");    stateRef.current.zone = "tools"; }
-      if (action === "right") { setZone("steam");    stateRef.current.zone = "steam"; }
     }
-  }, [maximized, view, games, onNavigate, onSelectGame, onLaunchGame, onKillGame, onGuide, onQuickSettings]);
+  }
 
-  const controllerType = useGamepad(handleInput);
+  // ── The layer ─────────────────────────────────────────────────────────────
+  function handlePress(action, { repeat }) {
+    const p = props.current;
 
-  return {
-    zone,
-    gridIndex,
-    controllerActive: controllerActive && maximized,
-    controllerType,
-  };
+    if (action.startsWith("rs_")) {
+      if (!repeat) startScroll(action);
+      return;
+    }
+
+    if (DIRECTIONS.has(action)) {
+      cancelLanding(); // user took over
+      moveFocus(action);
+      return;
+    }
+
+    if (action === "lb" || action === "rb") {
+      if (topModal()) return; // don't pull the section out from under a dialog
+      memory.current[p.view] = describeFocus(contentRoot() || undefined);
+      p.onNavigate(neighborSection(p.view, action === "rb" ? 1 : -1));
+      return;
+    }
+
+    if (action === "lt" || action === "rt") {
+      cancelLanding();
+      pageFocus(action === "rt" ? 1 : -1);
+      return;
+    }
+
+    const scope = getScope();
+    const active = document.activeElement;
+    const focused = active && active !== document.body && scope.contains(active) ? active : null;
+
+    switch (action) {
+      case "a": {
+        if (!focused) {
+          cancelLanding();
+          landFocus(memory.current[p.view]);
+          return;
+        }
+        if (isTextField(focused)) {
+          openKeyboard(focused);
+          return;
+        }
+        if (focused instanceof HTMLSelectElement) {
+          openPicker(focused);
+          return;
+        }
+        const gameId = focused.matches(GAME_ITEM) ? focused.dataset.gameId : null;
+        if (gameId && !p.runningGame) {
+          p.onLaunchGame?.(gameId);
+          return;
+        }
+        lastActivated.current = focused;
+        focused.click();
+        return;
+      }
+
+      case "b":
+        goBack();
+        return;
+
+      case "x": {
+        const holder = focused?.closest("[data-game-id], [data-panel-game-id]");
+        const id = holder?.dataset.gameId || holder?.dataset.panelGameId;
+        const game = id && p.games?.find((g) => g.id === id);
+        if (game) p.onQuickSettings?.(game);
+        return;
+      }
+
+      case "y":
+        if (p.runningGame) p.onKillGame?.();
+        return;
+
+      case "start": {
+        if (!focused?.matches(GAME_ITEM)) return;
+        const gameId = focused.dataset.gameId;
+        focused.click(); // selects → opens the config panel
+        waitFor(
+          () => document.querySelector(`.config-panel[data-panel-game-id="${CSS.escape(gameId)}"]`),
+          (panel) => {
+            const inBody = getCandidates(panel).filter((el) => el.closest(".config-panel__body"));
+            focusElement(inBody[0] || getCandidates(panel)[0]);
+          },
+        );
+        return;
+      }
+
+      case "back": {
+        const input = scope.querySelector(".content-header input");
+        if (input && isTextField(input) && isNavigable(input)) {
+          focusElement(input);
+          openKeyboard(input);
+        }
+        return;
+      }
+
+      default:
+    }
+  }
+
+  function handleRelease(action) {
+    if (action.startsWith("rs_")) stopScroll(action);
+  }
+
+  useGamepadLayer(handlePress, { priority: 0, onRelease: handleRelease });
+
+  return { controllerActive, controllerType, connected };
 }

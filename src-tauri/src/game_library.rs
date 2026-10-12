@@ -55,6 +55,12 @@ pub struct GameConfig {
     /// Extra arguments passed to the executable.
     pub launch_args: Vec<String>,
 
+    /// Wrapper command put in front of the whole launch command, e.g.
+    /// ["prime-run"] or ["gamescope", "-f", "--"]. Runs on the host, outside
+    /// any runtime container.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrappers: Vec<String>,
+
     /// Proton verb. Defaults to "waitforexitandrun".
     pub proton_verb: String,
 
@@ -84,6 +90,7 @@ impl Default for GameConfig {
             game_id: Uuid::new_v4().to_string().replace('-', "")[..8].to_string(),
             env_overrides: HashMap::new(),
             launch_args: Vec::new(),
+            wrappers: Vec::new(),
             proton_verb: "waitforexitandrun".to_string(),
             prefix_type: PrefixType::Proton,
             use_runtime: None,

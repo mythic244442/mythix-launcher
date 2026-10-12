@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::LauncherError;
 use crate::game_library::{CompatTool, Game, PrefixType};
 use crate::runtime::{CompatLayer, RuntimeVariant, is_runtime_installed, local_runtime_path};
+use crate::runtime_bridge::BridgeReport;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -85,6 +86,9 @@ pub struct LaunchEnv {
     pub command: Vec<String>,
     pub using_runtime: bool,
     pub runtime_variant: Option<String>,
+    /// What the runtime library bridge did (container launches only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_bridge: Option<BridgeReport>,
 }
 
 pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, LauncherError> {
@@ -253,6 +257,11 @@ pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, Lau
         let sdl_type = controller_info.controller_type.sdl_type_str(controller_info.ps_model);
         env.insert("SDL_GAMECONTROLLERTYPE".into(), sdl_type.into());
         eprintln!("[mythix] SDL_GAMECONTROLLERTYPE={}", sdl_type);
+
+        if crate::input_config::supports_ds4_glyphs(&steam_app_id) {
+            env.insert("MYTHIX_DS4_GLYPHS".into(), "1".into());
+            eprintln!("[mythix] MYTHIX_DS4_GLYPHS=1 (game supports PS glyphs)");
+        }
     }
 
     // block_hidraw is no longer needed — winebus hidraw haptics patch handles
@@ -330,6 +339,47 @@ pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, Lau
         }
     }
 
+    // Runtime library bridge: host libraries this tool links against that the
+    // runtime doesn't ship (Neutron's ntdll.so → libunwind.so.8) get copied to
+    // where mythix-shim adds them to LD_LIBRARY_PATH inside the container.
+    // Without it Wine dies with "could not load ntdll.so". Opt out (globally
+    // or per game) with MYTHIX_RUNTIME_BRIDGE=0.
+    let runtime_bridge = match runtime_variant_name.as_deref().and_then(RuntimeVariant::from_repo_dir) {
+        Some(variant) if using_runtime => {
+            if env_flag_off(&env, "MYTHIX_RUNTIME_BRIDGE") {
+                eprintln!("[mythix] Runtime library bridge: off (MYTHIX_RUNTIME_BRIDGE)");
+                None
+            } else {
+                let mut report = crate::runtime_bridge::prepare(
+                    &proton_path, &local_runtime_path(variant), variant.repo_dir());
+                eprintln!("[mythix] Runtime library bridge: {} bridged, {} missing ({})",
+                    report.bridged.len(), report.missing.len(), report.platform);
+                if !report.library_path.is_empty() {
+                    // The shim is what applies the bridge inside the container.
+                    if let Err(e) = crate::runtime::ensure_shim() {
+                        report.notes.push(format!(
+                            "couldn't update mythix-shim ({e}) — bridged libraries won't be used"));
+                    }
+                    // Keep any user-supplied dirs first.
+                    let mut dirs: Vec<String> = env.get("MYTHIX_RUNTIME_LIBRARY_PATH")
+                        .filter(|v| !v.is_empty()).cloned().into_iter().collect();
+                    dirs.extend(report.library_path.iter().cloned());
+                    env.insert("MYTHIX_RUNTIME_LIBRARY_PATH".into(), dirs.join(":"));
+                }
+                Some(report)
+            }
+        }
+        _ => None,
+    };
+
+    // Newer Neutron builds re-exec themselves inside Steam's runtime whenever
+    // they start outside a container. Here the per-game runtime setting makes
+    // that call, so a launch we deliberately run on the host stays on the host
+    // (set NEUTRON_CONTAINER or NEUTRON_NO_CONTAINER per game to override).
+    if !using_runtime && !env.contains_key("NEUTRON_CONTAINER") && !env.contains_key("NEUTRON_NO_CONTAINER") {
+        env.insert("NEUTRON_NO_CONTAINER".into(), "1".into());
+    }
+
     // Build command
     // Only use the CompatLayer command chain (mythix-shim → SLR container) when
     // the required runtime is actually installed. Otherwise launch directly
@@ -386,7 +436,24 @@ pub fn build_launch_env(game: &Game, tool: &CompatTool) -> Result<LaunchEnv, Lau
         command.insert(0, "gamemoderun".into());
     }
 
-    Ok(LaunchEnv { vars: env, command, using_runtime, runtime_variant: runtime_variant_name })
+    // Per-game wrapper (prime-run, gamescope -f --, mangohud, …) goes in front
+    // of everything, so it runs on the host and wraps the container too.
+    let wrappers: Vec<String> = config.wrappers.iter()
+        .map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
+    if let Some(first) = wrappers.first() {
+        if which_bin(first).is_none() && !Path::new(first).is_file() {
+            eprintln!("[mythix] Warning: wrapper '{first}' not found in PATH");
+        }
+        command.splice(0..0, wrappers);
+    }
+
+    Ok(LaunchEnv {
+        vars: env,
+        command,
+        using_runtime,
+        runtime_variant: runtime_variant_name,
+        runtime_bridge,
+    })
 }
 
 fn build_fallback_command(proton_path: &Path, verb: &str, exe: String) -> Vec<String> {
@@ -544,6 +611,18 @@ pub fn debug_launch_dump(game: &Game, launch_env: &LaunchEnv) -> String {
     out.push_str("\n── Command ─────────────────────────────────────\n");
     for (i, part) in launch_env.command.iter().enumerate() {
         out.push_str(&format!("  [{}] {}\n", i, part));
+    }
+
+    if launch_env.using_runtime {
+        out.push_str("\n── Runtime Library Bridge ───────────────────────\n");
+        match &launch_env.runtime_bridge {
+            Some(report) => {
+                for line in report.summary_lines() {
+                    out.push_str(&format!("  {line}\n"));
+                }
+            }
+            None => out.push_str("  off (MYTHIX_RUNTIME_BRIDGE=0)\n"),
+        }
     }
 
     out.push_str("\n── Environment Variables ────────────────────────\n");
@@ -751,6 +830,14 @@ const MAX_GAME_LOG_LINES_PER_STREAM: usize = 500;
 fn env_flag(env: &HashMap<String, String>, key: &str) -> bool {
     env.get(key)
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// True when `key` is explicitly switched off — in the launch env (settings /
+/// per-game overrides) or the launcher's own environment.
+fn env_flag_off(env: &HashMap<String, String>, key: &str) -> bool {
+    env.get(key).cloned().or_else(|| std::env::var(key).ok())
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
         .unwrap_or(false)
 }
 

@@ -2,71 +2,82 @@ import React, { useState, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../tauri.js";
 import { NavDropdown } from "./NavRail.jsx";
+import { glyphsFor } from "../controller/glyphs.js";
+import { useOverlays } from "../controller/overlays.js";
+import { useControllerState } from "../hooks/useGamepad.js";
 
-const GLYPHS = {
-  xbox: { a: "A", b: "B", x: "X", y: "Y", guide: "⌂" },
-  playstation: { a: "✕", b: "○", x: "□", y: "△", guide: "PS" },
-  switch: { a: "B", b: "A", x: "Y", y: "X", guide: "⌂" },
-};
-
-function ControllerIndicator({ controllerType }) {
-  const [status, setStatus] = useState("disconnected");
-
-  useEffect(() => {
-    function check() {
-      const gps = navigator.getGamepads?.() ?? [];
-      const connected = Array.from(gps).some(Boolean);
-      setStatus(connected ? "connected" : "disconnected");
-    }
-
-    check();
-    window.addEventListener("gamepadconnected", () => setStatus("connected"));
-    window.addEventListener("gamepaddisconnected", check);
-    const interval = setInterval(check, 3000);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("gamepadconnected", () => setStatus("connected"));
-      window.removeEventListener("gamepaddisconnected", check);
-    };
-  }, []);
-
-  const connected = status === "connected";
+function ControllerIndicator({ controllerType, connected }) {
+  const isConnected = connected > 0;
   const label = controllerType === "playstation" ? "🎮 PS"
     : controllerType === "switch" ? "🎮 NS"
     : "🎮";
 
   return (
-    <div className="controller-indicator" title={connected ? `${controllerType} controller connected` : "No controller"}>
+    <div className="controller-indicator" title={isConnected ? `${controllerType} controller connected` : "No controller"}>
       <span className="controller-indicator__dot" style={{
-        background: connected ? "#39ff14" : "transparent",
-        boxShadow: connected ? "0 0 6px #39ff14" : "none",
-        border: connected ? "none" : "1px solid rgba(180,167,214,0.2)",
+        background: isConnected ? "#39ff14" : "transparent",
+        boxShadow: isConnected ? "0 0 6px #39ff14" : "none",
+        border: isConnected ? "none" : "1px solid rgba(180,167,214,0.2)",
       }} />
       <span className="controller-indicator__icon" style={{
-        opacity: connected ? 0.9 : 0.25,
+        opacity: isConnected ? 0.9 : 0.25,
       }}>{label}</span>
     </div>
   );
 }
 
+// What kind of thing has focus — drives the A-button hint.
+function useFocusKind() {
+  const [kind, setKind] = useState("none");
+  useEffect(() => {
+    function update() {
+      const el = document.activeElement;
+      if (!el || el === document.body) setKind("none");
+      else if (el.matches(".game-card, .game-list__item")) setKind("game");
+      else if (el.matches("input, textarea")) setKind("text");
+      else if (el.matches("select")) setKind("select");
+      else setKind("other");
+    }
+    const deferred = () => setTimeout(update, 0);
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", deferred);
+    update();
+    return () => {
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", deferred);
+    };
+  }, []);
+  return kind;
+}
+
 function ControllerLegend({ runningGame, controllerActive, controllerType }) {
-  if (!controllerActive) return null;
-  const g = GLYPHS[controllerType] || GLYPHS.xbox;
-  const hints = [];
-  if (runningGame) {
-    hints.push({ btn: `${g.x}/${g.y}`, label: "Stop" });
-  } else {
-    hints.push({ btn: g.x, label: "Settings" });
+  const focusKind = useFocusKind();
+  const { keyboard, picker } = useOverlays();
+  // The keyboard and picker draw their own hint bars.
+  if (!controllerActive || keyboard || picker) return null;
+  const g = glyphsFor(controllerType);
+  const aLabel = {
+    game: runningGame ? "Details" : "Launch",
+    text: "Type",
+    select: "Choose",
+  }[focusKind] || "Select";
+
+  const hints = [
+    { btn: `${g.lb}/${g.rb}`, label: "Sections" },
+    { btn: g.a, label: aLabel },
+  ];
+  if (focusKind === "game") {
+    hints.push({ btn: g.start, label: "Configure" });
+    hints.push({ btn: g.x, label: "Quick Cfg" });
   }
-  hints.push({ btn: g.a, label: "Launch" });
   hints.push({ btn: g.b, label: "Back" });
+  if (runningGame) hints.push({ btn: g.y, label: "Stop" });
   hints.push({ btn: g.guide, label: "Hide" });
 
   return (
     <div className="controller-legend">
       {hints.map(({ btn, label }) => (
-        <div key={btn} className="controller-legend__hint">
+        <div key={label} className="controller-legend__hint">
           <span className="controller-legend__btn">{btn}</span>
           <span className="controller-legend__label">{label}</span>
         </div>
@@ -76,6 +87,7 @@ function ControllerLegend({ runningGame, controllerActive, controllerType }) {
 }
 
 export default function TitleBar({ maximized, active, onNavigate, runningGame, onKillGame, controllerActive, controllerType }) {
+  const { connected } = useControllerState();
   function onMouseDown(e) {
     if (e.button !== 0) return;
     if (e.target.closest("button")) return;
@@ -114,7 +126,7 @@ export default function TitleBar({ maximized, active, onNavigate, runningGame, o
         </button>
       )}
 
-      <ControllerIndicator controllerType={controllerType} />
+      <ControllerIndicator controllerType={controllerType} connected={connected} />
       <ControllerLegend runningGame={runningGame} controllerActive={controllerActive} controllerType={controllerType} />
 
       <div className="titlebar__controls">

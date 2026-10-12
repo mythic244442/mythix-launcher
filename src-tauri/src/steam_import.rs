@@ -26,6 +26,13 @@ pub struct SteamGame {
     pub install_path: String,
     /// Whether this game already exists in the mythix library
     pub already_imported: bool,
+    /// Library state, filled in by the `scan_steam` command: the entry launches
+    /// through a mythix-loader profile…
+    #[serde(default)]
+    pub uses_loader: bool,
+    /// …and its prefix already exists on disk.
+    #[serde(default)]
+    pub prefix_ready: bool,
 }
 
 // Skip IDs: runtimes, redistributables, Proton builds — not real games
@@ -155,6 +162,8 @@ pub fn scan_steam_games(existing_game_ids: &HashSet<String>) -> Result<Vec<Steam
                 steam_prefix,
                 install_path: install_path.to_string_lossy().into_owned(),
                 already_imported,
+                uses_loader: false,
+                prefix_ready: false,
             });
         }
     }

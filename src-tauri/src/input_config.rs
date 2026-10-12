@@ -32,6 +32,17 @@ static GLYPH_RULES: &[GlyphRule] = &[
     },
 ];
 
+static DS4_GLYPH_GAMES: &[&str] = &[
+    "1091500",  // Cyberpunk 2077
+    "1174180",  // Red Dead Redemption 2
+    "1245620",  // Elden Ring
+    "292030",   // The Witcher 3
+];
+
+pub fn supports_ds4_glyphs(steam_app_id: &str) -> bool {
+    DS4_GLYPH_GAMES.contains(&steam_app_id)
+}
+
 pub fn configure_game_glyphs(
     steam_app_id: &str,
     prefix_path: &Path,

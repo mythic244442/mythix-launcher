@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useRuntime, DEFAULT_VARIANT } from "../hooks/useRuntime.js";
 import RuntimeStatusBadge from "./RuntimeStatusBadge.jsx";
 import { api } from "../tauri.js";
+import { useControllerState } from "../hooks/useGamepad.js";
 
 const VERB_OPTIONS = [
   { value: "waitforexitandrun", label: "Wait for exit and run" },
@@ -163,37 +164,13 @@ function ControllerSection() {
   const [hidrawOk, setHidrawOk] = useState(null);
   const [installing, setInstalling] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [controllerType, setControllerType] = useState("none");
+  // WebKitGTK's Gamepad API only reports a pad after a button press inside the
+  // page, so use the backend's /dev/input monitor instead.
+  const pad = useControllerState();
+  const controllerType = pad.connected > 0 ? pad.type : "none";
 
   useEffect(() => {
     api.checkHidrawAccess().then(setHidrawOk).catch(() => setHidrawOk(false));
-
-    function detect() {
-      const gps = navigator.getGamepads?.() ?? [];
-      for (const gp of gps) {
-        if (!gp) continue;
-        const id = gp.id.toLowerCase();
-        if (id.includes("054c") || id.includes("sony") || id.includes("dualshock") || id.includes("dualsense") || id.includes("playstation")) {
-          setControllerType("playstation"); return;
-        }
-        if (id.includes("057e") || id.includes("nintendo") || id.includes("switch") || id.includes("pro controller")) {
-          setControllerType("switch"); return;
-        }
-        if (id.includes("xbox") || id.includes("045e") || id.includes("microsoft") || id.includes("xinput")) {
-          setControllerType("xbox"); return;
-        }
-        setControllerType("unknown");
-        return;
-      }
-      setControllerType("none");
-    }
-    detect();
-    window.addEventListener("gamepadconnected", detect);
-    window.addEventListener("gamepaddisconnected", detect);
-    return () => {
-      window.removeEventListener("gamepadconnected", detect);
-      window.removeEventListener("gamepaddisconnected", detect);
-    };
   }, []);
 
   async function installRules() {
