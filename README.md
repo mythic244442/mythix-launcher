@@ -263,4 +263,4 @@ GPL-2.0 — see [LICENSE](LICENSE) for details.
 
 ---
 
-Built by **Luna** and **CC** with steel, grit, and an unreasonable amount of caffeine.
+Built by Mythix with steel, grit, and hard work beyond measure.
