@@ -11,6 +11,7 @@ Mythix ships with first-class support for Mythix's new compatibility tool for ga
 **Library Management**
 - Add games from any source — Steam, GOG, Epic, Itch, Heroic, Amazon, or manual installs
 - One-click Steam library import with automatic prefix cloning
+- Custom loader builder for running game binaries from a custom location with the ability to set settings for them via a configuration file
 - Grid and list view with search, cover art (Steam CDN + local import), and playtime tracking
 - Spotlight hero banner showing your most-played game
 
@@ -50,51 +51,43 @@ Mythix ships with first-class support for Mythix's new compatibility tool for ga
 
 ---
 
-## Quick Start
+# Quick Start
 
-### Prerequisites
-
+## Prerequisites
 - **Rust** (stable toolchain)
 - **Node.js** 20+
 - **Tauri CLI v2**: `cargo install tauri-cli@^2`
-- **System libraries** (Ubuntu/Debian):
+
+## System libraries required
+### Ubuntu/Debian
   ```bash
   sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
   ```
-- **Arch Linux**:
+### Arch Linux
   ```bash
   sudo pacman -S webkit2gtk-4.1 libayatana-appindicator librsvg
   ```
 
 ### Install & Run
-
+#### First, download the git repository and navigate to the directory it downloaded to in your files:
 ```bash
-git clone https://github.com/mythix-org/mythix-launcher.git
+git clone https://github.com/mythix/mythix-launcher.git
 cd mythix-launcher
-npm install
-cargo tauri dev          # development mode with hot reload
 ```
-
-### Build for Release
-
+#### Then install the node packages and run in dev mode:
+```bash
+npm install
+npm run tauri dev
+```
+#### Alternatively you can build and run the launcher with cargo (Direct Rust):
+```bash
+cargo tauri dev
+```
+#### And if you want, you can build a release with cargo as well:
 ```bash
 cargo tauri build
 ```
-
-The release binary lands in `src-tauri/target/release/mythix-launcher`.
-A `.deb` and `.AppImage` are generated in `src-tauri/target/release/bundle/`.
-
----
-
-## Bundled Compatibility Tools
-
-Mythix Launcher release ships with:
-
-- **Neutron** — A full compatibility tool built on Wine Proton bleeding-edge. Includes DXVK, VKD3D-Proton, and the Neutron launch script with FSR, GameMode, Gamescope, anti-cheat runtime, and async shader support. The build included is Neutron-11.0-21199 and is the latest version.
-
-- **Mythix Wine** — A custom Neutron using a Wine built against Valve's Bleeding Edge Wine tree with patches applied from Wine HQ's staging patches and both GE and TkG patches as well as our own fixups and tweaks from Mythix. It is a Wine 10 build overall with fsync and esync and is our most experimental version so far.
-
-Install them to `~/.steam/root/compatibilitytools.d`, `~/.steam/steam/compatibilitytools.d`, or any directory you like. If you don't use Steam, set a **Custom tools directory** in Settings and point it to wherever you keep your compatibility tools. The launcher auto-detects them on startup.
+#### The release binary lands in `src-tauri/target/release/mythix-launcher`. A `.deb` and `.AppImage` are generated in `src-tauri/target/release/bundle/`.
 
 ---
 
@@ -231,7 +224,7 @@ mythix-launcher/
 | `env_overrides` | injected at launch | Any KEY=VALUE pairs |
 | `launch_args` | appended to command | Extra arguments after the exe |
 
-### Runtime container: host library bridge
+## Runtime container: host library bridge
 
 Wine builds made on a desktop distro can link libraries the Steam Linux Runtime doesn't ship — Mythix Neutron's `ntdll.so` needs `libunwind.so.8`, `winewayland.so` needs `libxkbregistry.so.0`. Inside the container Wine then dies with a misleading `could not load ntdll.so`. Before every container launch the launcher reads the tool's native binaries, checks each needed library against the runtime's own file list (`*_platform_*/usr-mtree.txt.gz`), and copies the host's copy of anything missing into `~/.local/share/mythix/runtime-bridge/<runtime>/`; `mythix-shim` appends that directory to `LD_LIBRARY_PATH` inside the container. Only libraries the runtime lacks are bridged, so the runtime's own libraries are never shadowed.
 
@@ -239,21 +232,21 @@ The launch debug dump has a **Runtime Library Bridge** section listing what was 
 
 ---
 
+## Bundled Compatibility Tools
+
+Mythix Launcher release ships with:
+
+- **Neutron** — A full compatibility tool home-baked and built by Mythix. It includes DXVK, VKD3D-Proton, and the Neutron launch script with FSR, GameMode, Gamescope, anti-cheat runtime, and async shader support. The build included is Mythix-Neutron-11.19-4 and is the latest version.
+
+- **Mythix Wine** — A custom Neutron using a Wine built against Valve's Bleeding Edge Wine tree with patches applied from Wine HQ's staging patches and both GE and TkG patches as well as our own fixups, tweaks, and patches from Mythix. It is a Wine 11 build with ntsync and is our most experimental version so far.
+
+Install it to `~/.steam/root/compatibilitytools.d`, `~/.steam/steam/compatibilitytools.d`, or any directory you like. If you don't use Steam, set a **Custom tools directory** in Settings and point it to wherever you keep your compatibility tools. The launcher auto-detects them on startup.
+
+---
+
 ## Contributing
 
 Mythix Launcher is open source. Pull requests, bug reports, and feature requests are welcome.
-
-```bash
-# Run in dev mode
-npm install
-cargo tauri dev
-
-# Run frontend only (no Rust)
-npm run dev
-
-# Build for release
-cargo tauri build
-```
 
 ---
 
