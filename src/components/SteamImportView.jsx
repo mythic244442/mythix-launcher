@@ -149,7 +149,8 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
             placeholder="Search…" value={search}
             onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <button className="btn btn--primary btn--sm" onClick={() => setShowCustom(true)}>
+        <button className="btn btn--primary btn--sm" onClick={() => setShowCustom(true)}
+          title="Add a game from any folder — build a mythix-loader profile for a Steam game, or import a non-Steam game">
           ＋ From folder
         </button>
         <button className="btn btn--secondary btn--sm" onClick={scan} disabled={loading}>
@@ -178,6 +179,16 @@ export default function SteamImportView({ toast, onRefreshLibrary }) {
             ))}
           </select>
         </div>
+      </div>
+
+      {/* What the two per-row actions do — the loader path spelled out, not just in tooltips */}
+      <div style={{
+        padding:"7px 24px", borderBottom:"1px solid var(--border)", flexShrink:0,
+        background:"var(--bg-1)", fontSize:11, color:"var(--text-3)", lineHeight:1.5,
+      }}>
+        <strong style={{ color:"var(--sky)" }}>Import</strong> brings in a copy of Steam's prefix and launches the game's own exe ·{" "}
+        <strong style={{ color:"var(--lime)" }}>Loader</strong> builds a mythix-loader profile and launches the game in place, keeping its prefix ·{" "}
+        <strong style={{ color:"var(--text-2)" }}>＋ From folder</strong> does the same for a game anywhere on disk
       </div>
 
       {/* Import status bar */}
