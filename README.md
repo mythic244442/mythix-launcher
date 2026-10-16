@@ -79,7 +79,7 @@ cd mythix-launcher
 npm install
 npm run tauri dev
 ```
-#### Alternatively you can build and run the launcher with cargo (Direct Rust):
+#### Alternatively you can build and run the launcher with cargo (Direct rust):
 ```bash
 cargo tauri dev
 ```
