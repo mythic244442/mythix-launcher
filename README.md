@@ -42,6 +42,7 @@ Mythix ships with first-class support for Mythix's new compatibility tool for ga
 - Force runtime on/off per game
 - Custom environment variables with a full KEY=VALUE editor
 - Quick toggles organized by category: Sync, Neutron, DXVK/VKD3D, Proton/Wine, GPU/Display, Mythix
+- Game saves (loader profiles) — find a game's saves from Steam's cloud-save config and symlink them into the profile, or snapshot a copy, from a Saves tab
 
 **Platform**
 - Native Linux desktop app — Tauri v2, no Electron

@@ -21,6 +21,8 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
   const [dryRun, setDryRun]     = useState(null);
   const [showDryRun, setShowDryRun] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
+  const [savesBusy, setSavesBusy] = useState(false);
+  const [savesResult, setSavesResult] = useState(null);
   const coverUrl = useCoverUrl(game?.cover_art);
 
   // Editable metadata state
@@ -42,6 +44,7 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
     setArgsText((game.config?.launch_args ?? []).join(" "));
     setWrapText((game.config?.wrappers ?? []).join(" "));
     setDryRun(null); setShowDryRun(false);
+    setTab("general"); setSavesResult(null);
   }, [game?.id, game?.exe_path]);
 
   useEffect(() => { api.getCompatTools().then(setTools).catch(() => {}); }, []);
@@ -79,7 +82,11 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
     catch (e) { setDryRun({ error: String(e) }); setShowDryRun(true); }
   }
 
+  // Saves only applies to games launched through a loader profile (their exe
+  // lives under ~/.mythix/loader_profiles/); the backend enforces this too.
+  const isLoaderGame = (game.exe_path || "").includes("loader_profiles");
   const TABS = [{ id:"general", label:"General" },{ id:"env", label:"Env Vars" },{ id:"advanced", label:"Advanced" }];
+  if (isLoaderGame) TABS.splice(1, 0, { id:"saves", label:"Saves" });
 
   return (
     <div className="config-panel" data-panel-game-id={game.id}>
@@ -379,6 +386,81 @@ export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch,
             <div className="config-panel__section-title">Danger Zone</div>
             <button className="btn btn--danger btn--sm" onClick={() => onRemove(game.id)}>✕ Remove from library</button>
             <p className="form-hint" style={{marginTop:6}}>Does not delete prefix data or game files.</p>
+          </div>
+        </>}
+
+        {tab === "saves" && <>
+          <div className="config-panel__section">
+            <div className="config-panel__section-title">Game Saves</div>
+            <p className="form-hint" style={{ marginTop:0 }}>
+              Finds where this game keeps its saves and links them into the profile's
+              <code> saves/</code> folder — your real saves aren't changed. Steam has to have
+              run the game once so its prefix exists.
+            </p>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:4 }}>
+              <button className="btn btn--primary btn--sm" disabled={savesBusy}
+                onClick={async () => {
+                  setSavesBusy(true);
+                  try {
+                    const r = await api.locateSaves(game.id, false);
+                    setSavesResult(r);
+                    toast?.(r.saves?.length ? `Linked ${r.saves.length} save folder(s)` : "No saves found yet",
+                            r.saves?.length ? "success" : "info");
+                  } catch (e) { toast?.(`${e}`, "error"); }
+                  finally { setSavesBusy(false); }
+                }}>
+                {savesBusy ? "Working…" : "Find & link saves"}
+              </button>
+              <button className="btn btn--secondary btn--sm" disabled={savesBusy}
+                onClick={async () => {
+                  setSavesBusy(true);
+                  try {
+                    const r = await api.locateSaves(game.id, true);
+                    setSavesResult(r);
+                    toast?.(r.saves?.length ? `Backed up ${r.saves.length} folder(s)` : "No saves found to back up",
+                            r.saves?.length ? "success" : "info");
+                  } catch (e) { toast?.(`${e}`, "error"); }
+                  finally { setSavesBusy(false); }
+                }}>
+                Back up a copy
+              </button>
+              <button className="btn btn--ghost btn--sm" disabled={savesBusy}
+                onClick={async () => {
+                  try { await api.openSavesFolder(game.id); }
+                  catch (e) { toast?.(`${e}`, "error"); }
+                }}>
+                Open saves folder
+              </button>
+            </div>
+            {savesResult && (
+              <div style={{ marginTop:12, background:"var(--bg-1)", border:"2px solid var(--border)",
+                borderRadius:"var(--r-md)", padding:"10px 12px", overflow:"auto", maxHeight:300 }}>
+                {savesResult.saves?.length ? <>
+                  <div style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--lime)", marginBottom:8 }}>
+                    {savesResult.copy ? "BACKED UP" : "LINKED"} — via {savesResult.source === "steam-cloud"
+                      ? "Steam cloud-save config" : "a prefix name match"}
+                  </div>
+                  {savesResult.saves.map((s) => (
+                    <div key={s.dest} style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--text-1)",
+                      marginBottom:6, wordBreak:"break-all" }}>
+                      <span style={{ color:"var(--sky)" }}>{s.label}</span>
+                      {s.state === "blocked" &&
+                        <span style={{ color:"var(--coral)" }}> (a real folder is already there — left alone)</span>}
+                      <div style={{ color:"var(--text-3)" }}>← {s.source}</div>
+                    </div>
+                  ))}
+                  {savesResult.copy && savesResult.backup_dir && (
+                    <div style={{ fontFamily:"var(--font-mono)", fontSize:10, color:"var(--text-3)",
+                      marginTop:6, wordBreak:"break-all" }}>snapshot: {savesResult.backup_dir}</div>
+                  )}
+                </> : (
+                  <span style={{ color:"var(--text-2)", fontFamily:"var(--font-mono)", fontSize:11 }}>
+                    No saves found. Steam has no cloud-save info for this game and nothing in the prefix
+                    matched its name — you can drop a folder into saves/ by hand.
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </>}
       </div>

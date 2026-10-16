@@ -31,3 +31,7 @@ archive/
 
 # AppImage build dirs
 mythix-app_image-*/
+
+# Python bytecode (loader tests)
+__pycache__/
+*.pyc

@@ -37,6 +37,8 @@ export const api = {
   previewLoaderImport: (installPath, appid)          => generateInvoke("preview_loader_import", { installPath, appid: appid || null }),
   importLoaderGame:  (args)                          => generateInvoke("import_loader_game", args),
   findExe:           (installPath)                   => generateInvoke("find_exe", { installPath }),
+  locateSaves:       (gameId, copy = false)          => generateInvoke("locate_saves", { gameId, copy }),
+  openSavesFolder:   (gameId)                        => generateInvoke("open_saves_folder", { gameId }),
   getSettings:       ()                              => generateInvoke("get_settings"),
   saveSettings:      (settings)                      => generateInvoke("save_settings", { settings }),
   fetchCover:        (gameId)                        => generateInvoke("fetch_cover", { gameId }),
