@@ -60,6 +60,45 @@ pub struct LoaderPlan {
     pub uses_loader: bool,
 }
 
+/// One save folder located by `mythix-loader --saves`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedFolder {
+    /// The folder's name inside the profile's saves/.
+    pub label: String,
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub path: String,
+    /// The real folder the save data lives in.
+    pub source: String,
+    /// "symlink" or "copy".
+    pub mode: String,
+    /// Where it was placed in the profile (the symlink, or the copy).
+    pub dest: String,
+    /// Symlink state: "linked", "ok" (already pointed right) or "blocked"
+    /// (a real folder is already there, left untouched).
+    #[serde(default)]
+    pub state: String,
+}
+
+/// What `mythix-loader --saves --json` reports.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavesResult {
+    pub profile: String,
+    pub appid: String,
+    /// The game's Proton prefix, when it has one.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// How the saves were found: "steam-cloud", "scan", or "none".
+    pub source: String,
+    pub copy: bool,
+    #[serde(default)]
+    pub saves: Vec<SavedFolder>,
+    /// With --copy, the snapshot directory under saves/backups/.
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+}
+
 /// The launcher-managed copy of the loader: $XDG_DATA_HOME/mythix/loader.
 pub fn loader_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("mythix").join("loader"))
@@ -126,19 +165,43 @@ pub fn run_loader(
         cmd.arg("--dry-run");
     }
 
-    let out = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            LauncherError::Launch("python3 not found — the loader needs Python 3".into())
-        } else {
-            LauncherError::Launch(format!("could not run mythix-loader: {e}"))
-        }
-    })?;
+    let out = cmd.output().map_err(map_spawn_err)?;
     parse_loader_output(&out.stdout, &out.stderr)
 }
 
-/// The script prints exactly one JSON object on stdout: a plan (`"ok": true`) or
-/// `{"ok": false, "error": "..."}`. Anything else is reported with stderr's tail.
-pub fn parse_loader_output(stdout: &[u8], stderr: &[u8]) -> Result<LoaderPlan, LauncherError> {
+/// Locate the game's saves for a profile and symlink (or, with `copy`, snapshot)
+/// them into the profile's saves/ folder. `profile` is a profile name or its
+/// directory. The real saves are never changed.
+pub fn run_saves(profile: &str, copy: bool) -> Result<SavesResult, LauncherError> {
+    let dir = install_loader()?;
+
+    let mut cmd = Command::new("python3");
+    cmd.arg(dir.join("mythix-loader"))
+        .arg("--saves")
+        .arg(profile)
+        .arg("--json")
+        .arg("--loader-dir")
+        .arg(&dir);
+    if copy {
+        cmd.arg("--copy");
+    }
+
+    let out = cmd.output().map_err(map_spawn_err)?;
+    parse_saves_output(&out.stdout, &out.stderr)
+}
+
+fn map_spawn_err(e: std::io::Error) -> LauncherError {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        LauncherError::Launch("python3 not found — the loader needs Python 3".into())
+    } else {
+        LauncherError::Launch(format!("could not run mythix-loader: {e}"))
+    }
+}
+
+/// The script prints exactly one JSON object on stdout: a result (`"ok": true`)
+/// or `{"ok": false, "error": "..."}`. Anything else is reported with stderr's
+/// tail. Returns the parsed object, or an error.
+fn loader_json(stdout: &[u8], stderr: &[u8]) -> Result<serde_json::Value, LauncherError> {
     let text = String::from_utf8_lossy(stdout);
     let Some(line) = text.lines().rev().find(|l| l.trim_start().starts_with('{')) else {
         let err = strip_ansi(&String::from_utf8_lossy(stderr));
@@ -150,15 +213,25 @@ pub fn parse_loader_output(stdout: &[u8], stderr: &[u8]) -> Result<LoaderPlan, L
             format!("mythix-loader gave no result: {}", tail.join(" | "))
         }));
     };
-
     let v: serde_json::Value = serde_json::from_str(line)
         .map_err(|e| LauncherError::Serialization(format!("mythix-loader output: {e}")))?;
     if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
         let msg = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
         return Err(LauncherError::Launch(msg.to_string()));
     }
+    Ok(v)
+}
+
+pub fn parse_loader_output(stdout: &[u8], stderr: &[u8]) -> Result<LoaderPlan, LauncherError> {
+    let v = loader_json(stdout, stderr)?;
     serde_json::from_value(v)
         .map_err(|e| LauncherError::Serialization(format!("mythix-loader plan: {e}")))
+}
+
+pub fn parse_saves_output(stdout: &[u8], stderr: &[u8]) -> Result<SavesResult, LauncherError> {
+    let v = loader_json(stdout, stderr)?;
+    serde_json::from_value(v)
+        .map_err(|e| LauncherError::Serialization(format!("mythix-loader saves: {e}")))
 }
 
 #[cfg(test)]
@@ -188,6 +261,30 @@ mod tests {
         let d = profiles_dir().unwrap();
         assert!(is_loader_stub(&d.join("ready-or-not").join("readyornot.exe")));
         assert!(!is_loader_stub(Path::new("/games/Ready Or Not/ReadyOrNot.exe")));
+    }
+
+    #[test]
+    fn parses_saves_result() {
+        let out = br#"noise
+{"ok": true, "profile": "/p", "appid": "480", "prefix": "/c/compatdata/480", "source": "steam-cloud", "copy": false, "saves": [{"label": "spacewar", "root": "WinMyDocuments", "path": "My Games\\Spacewar", "source": "/pfx/Documents/My Games/Spacewar", "mode": "symlink", "dest": "/p/saves/spacewar", "state": "linked"}], "backup_dir": null}
+"#;
+        let r = parse_saves_output(out, b"").unwrap();
+        assert_eq!(r.appid, "480");
+        assert_eq!(r.source, "steam-cloud");
+        assert!(!r.copy);
+        assert_eq!(r.prefix.as_deref(), Some("/c/compatdata/480"));
+        assert_eq!(r.saves.len(), 1);
+        assert_eq!(r.saves[0].label, "spacewar");
+        assert_eq!(r.saves[0].mode, "symlink");
+        assert_eq!(r.saves[0].state, "linked");
+        assert!(r.backup_dir.is_none());
+    }
+
+    #[test]
+    fn saves_errors_surface() {
+        let e = parse_saves_output(b"{\"ok\": false, \"error\": \"No such profile: nope\"}\n", b"")
+            .unwrap_err();
+        assert!(e.to_string().contains("No such profile"));
     }
 
     #[test]

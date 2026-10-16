@@ -34,6 +34,7 @@ pub fn run() {
             setup_prefix,
             scan_steam, import_steam_game, import_custom_game, find_exe,
             preview_loader_import, import_loader_game,
+            locate_saves, open_saves_folder,
             fetch_cover, import_cover, clear_cover,
             get_settings, save_settings,
             window_minimize, window_maximize, window_close, window_hide, window_show,

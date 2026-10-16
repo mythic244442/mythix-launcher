@@ -899,6 +899,48 @@ pub fn install_udev_rules() -> Result<String, String> {
     }
 }
 
+// ── Saves (loader profiles only) ─────────────────────────────────────────────
+
+/// The profile folder for a game that launches through a loader stub.
+fn loader_profile_dir(game_id: &str) -> Result<PathBuf, String> {
+    let lib = game_library::load_library().map_err(|e| e.to_string())?;
+    let game = lib.games.iter().find(|g| g.id == game_id)
+        .ok_or_else(|| "game not found".to_string())?;
+    if !crate::loader::is_loader_stub(&game.exe_path) {
+        return Err("This game isn't a loader profile, so it has no saves to manage.".into());
+    }
+    game.exe_path.parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "could not resolve the profile folder".to_string())
+}
+
+/// Locate the game's saves and symlink them into the profile's saves/ folder
+/// (or, with `copy`, snapshot a copy). Never changes the real saves. Runs on a
+/// blocking thread — a --copy of large saves can take a moment — so the UI
+/// stays responsive, like the other loader commands.
+#[tauri::command]
+pub async fn locate_saves(game_id: String, copy: bool) -> Result<crate::loader::SavesResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let dir = loader_profile_dir(&game_id)?;
+        let profile = dir.to_str().ok_or_else(|| "profile path is not valid UTF-8".to_string())?;
+        crate::loader::run_saves(profile, copy).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Saves thread panicked: {e}"))?
+}
+
+/// Open the profile's saves/ folder in the file manager.
+#[tauri::command]
+pub fn open_saves_folder(game_id: String) -> Result<(), String> {
+    let saves = loader_profile_dir(&game_id)?.join("saves");
+    std::fs::create_dir_all(&saves).map_err(|e| e.to_string())?;
+    std::process::Command::new("xdg-open")
+        .arg(&saves)
+        .spawn()
+        .map_err(|e| format!("could not open the folder: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
