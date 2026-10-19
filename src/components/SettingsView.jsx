@@ -145,7 +145,7 @@ export default function SettingsView() {
           ["Desktop shell",  "Tauri v2 (Rust)",               "var(--lime)"],
           ["Env assembly",   "Rust port of original runner",  "var(--lime)"],
           ["VDF parser",     "Custom Rust (vdf.rs)",          "var(--lime)"],
-          ["Runtime",        "Steam Linux Runtime (sniper)",  "var(--lime)"],
+          ["Runtime",        "Steam Linux Runtime 4 (Heavy)", "var(--lime)"],
           ["Persistence",    "JSON → $XDG_DATA_HOME/mythix",  "var(--text-1)"],
         ].map(([label, value, color]) => (
           <div key={label} style={{ display:"flex", justifyContent:"space-between",

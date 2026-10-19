@@ -369,7 +369,7 @@ export default function LibraryView({
                 <>
                   <span className="empty-state__title">No games yet</span>
                   <span className="empty-state__subtitle">
-                    Add your first game and configure your wine-proton hybrid
+                    Add your first game and choose a Wine, Proton, or Neutron compatibility tool
                     to get started.
                   </span>
                   <button

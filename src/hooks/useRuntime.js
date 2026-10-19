@@ -8,8 +8,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
-// Default variant — sniper (steamrt3) is what GE-Proton needs
-export const DEFAULT_VARIANT = "steamrt3";
+// First-run installation default. Game launches still follow each tool's manifest.
+export const DEFAULT_VARIANT = "steamrt4";
 
 export function useRuntime() {
   const [runtimes, setRuntimes]       = useState([]);

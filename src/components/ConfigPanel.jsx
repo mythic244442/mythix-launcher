@@ -10,7 +10,7 @@ const RUNTIME_VARIANTS = [
   { value: "", label: "Auto (detect from toolmanifest)" },
   { value: "sniper", label: "Steam Runtime 3.0 — Sniper (Proton 8+, GE-Proton)" },
   { value: "soldier", label: "Steam Runtime 2.0 — Soldier (Proton 5-7, legacy)" },
-  { value: "steamrt4", label: "Steam Runtime 4.0 — Heavy (Proton 11+, experimental)" },
+  { value: "steamrt4", label: "Steam Runtime 4.0 — Heavy (tools requiring Runtime 4)" },
 ];
 
 export default function ConfigPanel({ game, onSave, onClose, onRemove, onLaunch, onMetaUpdate, toast }) {

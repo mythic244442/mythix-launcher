@@ -86,7 +86,7 @@ export default function RuntimeSetup({ progress, installing, error, onInstall, o
           marginBottom: 24,
           letterSpacing: "-0.01em",
         }}>
-          Steam Linux Runtime
+          Steam Linux Runtime 4 — Heavy
         </div>
 
         {/* Explanation */}
@@ -107,16 +107,21 @@ export default function RuntimeSetup({ progress, installing, error, onInstall, o
           <p style={{ fontSize: 13, color: "var(--text-1)", lineHeight: 1.75, marginBottom: 10 }}>
             This is the same runtime Steam uses internally, but{" "}
             <span style={{ color: "var(--text-0)", fontWeight: 600 }}>you don't need Steam installed.</span>
-            {" "}It's downloaded directly from Valve's CDN (~200 MB) and stored in{" "}
+            {" "}Runtime 4 (Heavy) is downloaded directly from Valve's CDN and stored by default in{" "}
             <code style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--sky)" }}>
-              ~/.local/share/mythix/steamrt3/
+              ~/.local/share/mythix/steamrt4/
             </code>.
           </p>
           <p style={{ fontSize: 13, color: "var(--text-1)", lineHeight: 1.75 }}>
             The full launch chain becomes:{" "}
             <code style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--lime)", display: "block", marginTop: 6, lineHeight: 1.8 }}>
-              SLR container → your wine-proton hybrid → game.exe
+              Required SLR container → Proton / Neutron → game.exe
             </code>
+          </p>
+          <p style={{ fontSize: 13, color: "var(--text-1)", lineHeight: 1.75, marginTop: 10 }}>
+            Games use the runtime required by their compatibility tool, not necessarily Heavy.
+            Install Sniper (Runtime 3) or Soldier (Runtime 2) from Compat Tools when needed.
+            Plain Wine runs without an SLR container. Custom XDG_DATA_HOME locations are respected.
           </p>
         </div>
 
@@ -127,8 +132,8 @@ export default function RuntimeSetup({ progress, installing, error, onInstall, o
           marginBottom: 24,
         }}>
           {[
-            ["~200 MB",  "download size"],
-            ["sniper",   "SLR variant (steamrt3)"],
+            ["Varies",   "download size"],
+            ["Heavy",    "Runtime 4 (steamrt4)"],
             ["Valve CDN","source"],
           ].map(([val, label]) => (
             <div key={label} style={{
@@ -206,7 +211,7 @@ export default function RuntimeSetup({ progress, installing, error, onInstall, o
             onClick={onInstall}
             disabled={installing}
           >
-            {installing ? "Downloading…" : "↓ Download Runtime (~200 MB)"}
+            {installing ? "Downloading…" : "↓ Download Heavy (Runtime 4)"}
           </button>
           <button
             className="btn btn--ghost"

@@ -41,7 +41,7 @@ pub enum RuntimeVariant {
     Sniper,
     /// Steam Linux Runtime 2 "soldier" — older Proton / legacy
     Soldier,
-    /// Steam Linux Runtime 4 — future / experimental
+    /// Steam Linux Runtime 4 (Heavy) — required by newer compatibility tools
     SteamRT4,
 }
 
@@ -83,7 +83,7 @@ impl RuntimeVariant {
         match self {
             Self::Sniper   => "Steam Linux Runtime 3 (sniper)",
             Self::Soldier  => "Steam Linux Runtime 2 (soldier)",
-            Self::SteamRT4 => "Steam Linux Runtime 4",
+            Self::SteamRT4 => "Steam Linux Runtime 4 (Heavy)",
         }
     }
 
