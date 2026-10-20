@@ -83,10 +83,34 @@ pub fn default_prefix_dir(game_id: &str) -> Option<PathBuf> {
     dot_dir().map(|d| d.join("gamedata").join(game_id))
 }
 
-/// Strip the launcher game-id prefix, accepting both the new "mythix-" form and
-/// the legacy "looni-" form so games saved before the rebrand still resolve.
+/// Resolve an app ID from the new "mythix-" form, the legacy "looni-" form,
+/// or a bare numeric Steam ID. Manual UUIDs still use the caller's fallback.
 pub fn strip_game_id_prefix(game_id: &str) -> Option<&str> {
     game_id
         .strip_prefix("mythix-")
         .or_else(|| game_id.strip_prefix("looni-"))
+        .or_else(|| {
+            (!game_id.is_empty() && game_id.bytes().all(|c| c.is_ascii_digit()))
+                .then_some(game_id)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_game_id_prefix;
+
+    #[test]
+    fn resolves_prefixed_and_bare_steam_ids() {
+        assert_eq!(strip_game_id_prefix("mythix-1091500"), Some("1091500"));
+        assert_eq!(strip_game_id_prefix("looni-1091500"), Some("1091500"));
+        assert_eq!(strip_game_id_prefix("1091500"), Some("1091500"));
+    }
+
+    #[test]
+    fn leaves_manual_ids_for_the_callers_fallback() {
+        for id in ["", "cyberpunk", "78da8e29", "123-456", "１２３",
+                   "550e8400-e29b-41d4-a716-446655440000"] {
+            assert_eq!(strip_game_id_prefix(id), None, "{id}");
+        }
+    }
 }
