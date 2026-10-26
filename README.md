@@ -57,6 +57,7 @@ Mythix ships with first-class support for Mythix's new compatibility tool for ga
 - Per-game environment variable overrides with 60+ quick toggles (DXVK, MangoHud, Fsync, NTSync, FSR, GameMode, and more)
 - Per-game launch arguments, DLL overrides, and Proton verb selection
 - Dry-run inspector — see exactly what command, env, and paths will be used before launching
+- Neutron diag in Compat Tools — the full resolved Neutron configuration per tool (Wine, DXVK/VKD3D-Proton health, Steam, VR, Sony controllers, sync backend, container), colour-coded, with one-click copy for bug reports
 - Automatic game drive symlinks for non-C: installs
 - Process isolation via `setsid --fork` to escape Tauri's seccomp sandbox
 
@@ -208,6 +209,7 @@ mythix-launcher/
 │       ├── EnvQuickToggles.jsx   # 60+ categorized env var toggles
 │       ├── SteamImportView.jsx   # Steam library scanner + importer
 │       ├── CompatToolsView.jsx   # Installed compatibility tools browser
+│       ├── ToolDiagPanel.jsx     # `neutron diag` report per Neutron tool
 │       ├── SettingsView.jsx      # Global launcher settings
 │       ├── RuntimeSetup.jsx      # First-run Steam Runtime installer
 │       ├── AddGameModal.jsx      # Add game dialog
@@ -220,7 +222,7 @@ mythix-launcher/
         ├── game_library.rs       # Library persistence, CRUD, compat tool scanner
         ├── launcher.rs           # Prefix setup, env assembly, process spawning
         ├── gamepad.rs            # /dev/input/js* monitor → merged gamepad:action events
-        ├── runtime.rs            # Steam Runtime download + management, mythix-shim
+        ├── runtime.rs            # Steam Runtime download + management, mythix-shim, neutron diag
         ├── runtime_bridge.rs     # Host libraries a tool needs but the runtime lacks
         ├── steam_import.rs       # Steam library detection + prefix cloning
         ├── coverart.rs           # Steam CDN cover art fetcher

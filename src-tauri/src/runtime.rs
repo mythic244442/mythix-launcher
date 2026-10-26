@@ -863,6 +863,17 @@ fn split_diag_line(line: &str) -> (String, String) {
         }
         i += 1;
     }
+    // Neutron builds before the 2-space fix print one space after keys that
+    // overrun the 22-column pad (the translation-layer DLL rows); split those
+    // on the status word that starts the value.
+    for marker in [" BAD — ", " skipped "] {
+        if let Some(at) = line.find(marker) {
+            return (line[..at].trim().to_string(), line[at..].trim().to_string());
+        }
+    }
+    if let Some(key) = line.strip_suffix(" ok") {
+        return (key.trim().to_string(), "ok".to_string());
+    }
     (line.trim().to_string(), String::new())
 }
 
@@ -914,5 +925,37 @@ mod diag_tests {
             .unwrap();
         assert!(env.entries.iter().any(|e| e.key.starts_with("WINEDLLOVERRIDES=d3d8=n")));
 
+        // Keys past the pad column (old single-space output) still split.
+        let layers = diag
+            .sections
+            .iter()
+            .find(|s| s.title == "translation layers (bundled)")
+            .unwrap();
+        let openvr = layers
+            .entries
+            .iter()
+            .find(|e| e.key == "DXVK x64/openvr_api_dxvk.dll")
+            .unwrap();
+        assert_eq!(openvr.value, "ok");
+        let placeholder = layers
+            .entries
+            .iter()
+            .find(|e| e.key == "VKD3D-Proton x86_64-windows/libvkd3d-1.dll")
+            .unwrap();
+        assert!(placeholder.value.starts_with("BAD — "), "{}", placeholder.value);
+    }
+
+    #[test]
+    fn splits_current_two_space_output() {
+        let diag = parse_diag_output(
+            "== translation layers (bundled) ==\n\
+             \x20 DXVK x64/openvr_api_dxvk.dll  ok\n\
+             \x20 VKD3D-Proton i386-windows/libvkd3d-1.dll  skipped (not in manifest, never installed)\n",
+        );
+        let e = &diag.sections[0].entries;
+        assert_eq!(e[0].key, "DXVK x64/openvr_api_dxvk.dll");
+        assert_eq!(e[0].value, "ok");
+        assert_eq!(e[1].key, "VKD3D-Proton i386-windows/libvkd3d-1.dll");
+        assert!(e[1].value.starts_with("skipped"));
     }
 }
