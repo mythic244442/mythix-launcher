@@ -72,6 +72,17 @@ pub async fn check_runtime_update(variant: String) -> Result<String, String> {
     serde_json::to_string(&status).map_err(|e| e.to_string())
 }
 
+/// Run `neutron diag` on a compatibility tool and return the parsed report.
+/// Blocking — a container self-wrap on first run can take a few seconds.
+#[tauri::command]
+pub async fn neutron_diag(tool_path: String) -> Result<runtime::NeutronDiag, String> {
+    tokio::task::spawn_blocking(move || {
+        runtime::run_neutron_diag(std::path::Path::new(&tool_path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Diag thread panicked: {e}"))?
+}
+
 fn variant_from_str(s: &str) -> Result<RuntimeVariant, LauncherError> {
     match s {
         "steamrt3" | "sniper"  => Ok(RuntimeVariant::Sniper),

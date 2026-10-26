@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import { api } from "../tauri.js";
 import { useRuntime, DEFAULT_VARIANT } from "../hooks/useRuntime.js";
 import RuntimeStatusBadge from "./RuntimeStatusBadge.jsx";
+import ToolDiagPanel from "./ToolDiagPanel.jsx";
 
 const KIND_LABELS = {
   "neutron":            { label: "Neutron",            color: "var(--neutron)" },
@@ -126,12 +127,15 @@ export default function CompatToolsView() {
                 </div>
               : <div style={{display:"flex",flexDirection:"column",gap:8}}>
                   {tools.map((tool) => (
-                    <div key={tool.path} style={{background:"var(--bg-2)",border:"1px solid var(--border)",borderRadius:"var(--r-lg)",padding:"12px 16px",display:"flex",alignItems:"center",gap:12}}>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontFamily:"var(--font-display)",fontWeight:700,fontSize:14,color:"var(--text-0)",marginBottom:4}}>{tool.name}</div>
-                        <div style={{fontFamily:"var(--font-mono)",fontSize:10,color:"var(--text-3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tool.path}</div>
+                    <div key={tool.path} style={{background:"var(--bg-2)",border:"1px solid var(--border)",borderRadius:"var(--r-lg)",padding:"12px 16px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:12}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontFamily:"var(--font-display)",fontWeight:700,fontSize:14,color:"var(--text-0)",marginBottom:4}}>{tool.name}</div>
+                          <div style={{fontFamily:"var(--font-mono)",fontSize:10,color:"var(--text-3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tool.path}</div>
+                        </div>
+                        <KindBadge kind={tool.kind}/>
                       </div>
-                      <KindBadge kind={tool.kind}/>
+                      {tool.kind === "neutron" && <ToolDiagPanel toolPath={tool.path}/>}
                     </div>
                   ))}
                 </div>

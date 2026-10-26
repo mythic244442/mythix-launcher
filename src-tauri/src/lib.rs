@@ -29,7 +29,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_games, add_game, remove_game, update_game_config, update_game_meta,
             get_compat_tools,
-            get_runtime_status, install_runtime_cmd, check_runtime_update,
+            get_runtime_status, install_runtime_cmd, check_runtime_update, neutron_diag,
             launch_game, kill_game, dry_run_launch,
             setup_prefix,
             scan_steam, import_steam_game, import_custom_game, find_exe,

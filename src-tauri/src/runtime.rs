@@ -693,3 +693,226 @@ pub fn all_runtime_info() -> Vec<RuntimeInfo> {
         .map(|v| get_runtime_info(*v))
         .collect()
 }
+
+// ── Neutron diag ──────────────────────────────────────────────────────────────
+// Runs `<tool>/neutron diag` and parses its `== section ==` / `key  value`
+// output into structured sections for the runtime health panel.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagEntry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagSection {
+    pub title: String,
+    pub entries: Vec<DiagEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeutronDiag {
+    pub sections: Vec<DiagSection>,
+    pub raw: String,
+}
+
+/// Locate the neutron entry script inside a tool directory.
+fn neutron_script_path(tool_path: &Path) -> Option<PathBuf> {
+    for name in ["neutron", "neutron.py"] {
+        let p = tool_path.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Run `neutron diag` for the tool at `tool_path` and parse the output.
+///
+/// Neutron self-wraps into an SLR container when it finds one, so diag reports
+/// the same resolved configuration a real launch would use. We deliberately do
+/// NOT set STEAM_COMPAT_DATA_PATH: diag then reports Neutron's standalone
+/// default prefix instead of touching any game's prefix.
+pub fn run_neutron_diag(tool_path: &Path) -> Result<NeutronDiag, LauncherError> {
+    let script = neutron_script_path(tool_path).ok_or_else(|| {
+        LauncherError::Io(format!(
+            "no neutron script in {}",
+            tool_path.display()
+        ))
+    })?;
+
+    let mut cmd = Command::new(&script);
+    cmd.arg("diag")
+        .env_remove("STEAM_COMPAT_DATA_PATH")
+        .env_remove("STEAM_COMPAT_CONFIG")
+        .env_remove("NEUTRON_CONFIG")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // The tool often lives behind a symlink (e.g. ~/compatibilitytools.d ->
+    // /stuff/compatibilitytools.d), and pressure-vessel only shares paths it
+    // can see — the container has the real path, not the symlink. Hand it
+    // both: the canonical tool dir, and its parent as a tool search root.
+    if let Ok(canonical) = std::fs::canonicalize(tool_path) {
+        if let Some(parent) = canonical.parent() {
+            cmd.env("STEAM_COMPAT_TOOL_PATHS", parent);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| LauncherError::Io(format!("spawn neutron diag: {e}")))?;
+
+    // Drain both pipes on their own threads: a full stderr buffer would
+    // otherwise block the child while we're blocked reading stdout.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut pipe) = out_pipe {
+            let _ = pipe.read_to_string(&mut buf);
+        }
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut pipe) = err_pipe {
+            let _ = pipe.read_to_string(&mut buf);
+        }
+        buf
+    });
+
+    // Generous but bounded window — container self-wrap + first-time session
+    // resolution can take a few seconds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = out_thread.join().unwrap_or_default();
+                let stderr = err_thread.join().unwrap_or_default();
+                if !status.success() {
+                    return Err(LauncherError::Io(format!(
+                        "neutron diag exited with {status}: {}",
+                        stderr.trim()
+                    )));
+                }
+                let diag = parse_diag_output(&stdout);
+                if diag.sections.is_empty() {
+                    // Exit 0 but no `== section ==` headers means we captured
+                    // a wrapper's chatter (e.g. a failed container self-wrap)
+                    // instead of diag output — surface it, don't swallow it.
+                    let snippet: String = stdout.chars().take(300).collect();
+                    return Err(LauncherError::Io(format!(
+                        "neutron diag produced no parseable output: {}",
+                        snippet.trim()
+                    )));
+                }
+                return Ok(diag);
+            }
+            Ok(None) => {
+                if std::time::Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(LauncherError::Io("neutron diag timed out".into()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(LauncherError::Io(format!("wait neutron diag: {e}"))),
+        }
+    }
+}
+
+/// Parse diag output into sections. Lines between `== title ==` headers are
+/// `  key                value` pairs; the intro line before the first header
+/// is kept in the raw text only.
+fn parse_diag_output(raw: &str) -> NeutronDiag {
+    let mut sections: Vec<DiagSection> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(title) = trimmed
+            .strip_prefix("==")
+            .and_then(|s| s.strip_suffix("=="))
+        {
+            sections.push(DiagSection {
+                title: title.trim().to_string(),
+                entries: Vec::new(),
+            });
+        } else if !trimmed.is_empty() {
+            if let Some(section) = sections.last_mut() {
+                // kv() pads keys to a fixed column; split on the first run of
+                // 2+ spaces so values containing single spaces stay intact.
+                let (key, value) = split_diag_line(trimmed);
+                section.entries.push(DiagEntry { key, value });
+            }
+        }
+    }
+    NeutronDiag {
+        sections,
+        raw: raw.to_string(),
+    }
+}
+
+fn split_diag_line(line: &str) -> (String, String) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b' ' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+            let key = line[..i].trim().to_string();
+            let value = line[i..].trim().to_string();
+            return (key, value);
+        }
+        i += 1;
+    }
+    (line.trim().to_string(), String::new())
+}
+
+#[cfg(test)]
+mod diag_tests {
+    use super::*;
+
+    /// Captured from the real `Mythix-Neutron-11.19-4 neutron diag` on this
+    /// machine — regression-locks the parser against actual output shape.
+    const REAL_DIAG: &str = include_str!("../test-fixtures/neutron-diag.txt");
+
+    #[test]
+    fn parses_real_diag_output() {
+        let diag = parse_diag_output(REAL_DIAG);
+        let titles: Vec<&str> = diag.sections.iter().map(|s| s.title.as_str()).collect();
+        for want in [
+            "distribution",
+            "translation layers (bundled)",
+            "steam",
+            "vr",
+            "nvidia",
+            "sony controllers",
+            "wine mono / gecko",
+            "sync backend",
+            "compat config",
+            "prefix",
+            "container",
+            "wrappers & runtimes",
+            "environment (neutron-managed; pass --full-env for all)",
+        ] {
+            assert!(titles.contains(&want), "missing section: {want}");
+        }
+
+        let dist = &diag.sections[0];
+        assert_eq!(dist.title, "distribution");
+        let wine = dist.entries.iter().find(|e| e.key == "wine").unwrap();
+        assert!(wine.value.starts_with("[found] "), "wine entry: {}", wine.value);
+
+        // Multi-space values survive: key splits on the 2+ space pad only.
+        let profile = dist.entries.iter().find(|e| e.key == "build profile").unwrap();
+        assert!(profile.value.contains("Valve bleeding-edge + GE + TkG"));
+
+        // Env section lines are KEY=VALUE with no key padding — whole line
+        // becomes the key, empty value.
+        let env = diag
+            .sections
+            .iter()
+            .find(|s| s.title.starts_with("environment"))
+            .unwrap();
+        assert!(env.entries.iter().any(|e| e.key.starts_with("WINEDLLOVERRIDES=d3d8=n")));
+
+    }
+}

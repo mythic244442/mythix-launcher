@@ -27,6 +27,7 @@ export const api = {
   getRuntimeStatus:  ()                              => generateInvoke("get_runtime_status"),
   installRuntime:    (variant)                       => generateInvoke("install_runtime_cmd", { variant }),
   checkRuntimeUpdate:(variant)                       => generateInvoke("check_runtime_update", { variant }),
+  neutronDiag:       (toolPath)                      => generateInvoke("neutron_diag", { toolPath }),
   launchGame:        (gameId)                        => generateInvoke("launch_game", { gameId }),
   killGame:          (pid, gameId)                    => generateInvoke("kill_game", { pid, gameId }),
   dryRunLaunch:      (gameId)                        => generateInvoke("dry_run_launch", { gameId }),

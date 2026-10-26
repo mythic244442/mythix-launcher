@@ -1,0 +1,131 @@
+neutron diag — resolved launch configuration (no game launched)
+
+== distribution ==
+  neutron dir            /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4
+  tool version           1792379545 Mythix-Neutron-11.19-4
+  files dir              /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files
+  wine                   [found] /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine
+  wine64                 [MISSING] /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine64
+  wineserver             [found] /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wineserver
+  wineboot               [found] /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wineboot
+  runner                 /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine
+  prefix schema          Mythix-Neutron-11.19-4 (from version file)
+  build profile          mythix-neutron-11 — Mythix Neutron 11.x (Valve bleeding-edge + GE + TkG)
+  build-info             PROFILE=mythix-11.19  BUILD_MODE=wow64  WAYLAND=1  SOURCE=mythix-wine
+  display driver         build default — wanted (build default (Wayland-first build)) but no Wayland session (WAYLAND_DISPLAY unset)
+  default_pfx            [ready] /stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/share/default_pfx
+
+== translation layers (bundled) ==
+  DXVK x64/d3d10core.dll ok
+  DXVK x64/d3d11.dll     ok
+  DXVK x64/d3d8.dll      ok
+  DXVK x64/d3d9.dll      ok
+  DXVK x64/dxgi.dll      ok
+  DXVK x64/openvr_api_dxvk.dll ok
+  DXVK x32/d3d10core.dll ok
+  DXVK x32/d3d11.dll     ok
+  DXVK x32/d3d8.dll      ok
+  DXVK x32/d3d9.dll      ok
+  DXVK x32/dxgi.dll      ok
+  DXVK x32/openvr_api_dxvk.dll ok
+  VKD3D-Proton x86_64-windows/d3d12.dll ok
+  VKD3D-Proton x86_64-windows/d3d12core.dll ok
+  VKD3D-Proton x86_64-windows/libvkd3d-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  VKD3D-Proton x86_64-windows/libvkd3d-shader-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  VKD3D-Proton x86_64-windows/libvkd3d-utils-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  VKD3D-Proton i386-windows/d3d12.dll ok
+  VKD3D-Proton i386-windows/d3d12core.dll ok
+  VKD3D-Proton i386-windows/libvkd3d-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  VKD3D-Proton i386-windows/libvkd3d-shader-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  VKD3D-Proton i386-windows/libvkd3d-utils-1.dll BAD — is a Wine builtin/placeholder, not a translation DLL (not in manifest, never installed)
+  overrides style        n
+
+== steam ==
+  steam bridge           lsteamclient + steam.exe built with this Wine (Proton Steam model)
+  steam.exe launch       no — no Steam app id (unset): direct launch
+  proton components      lsteamclient.dll:yes  lsteamclient.so:yes  steam.exe:yes
+  steam root             (unset)
+
+== vr ==
+  vrclient               not shipped — foreign vrclients disabled and swept (NEUTRON_FORCE_VR=1 trusts them)
+  wineopenxr.dll         yes
+  PROTON_VR_RUNTIME      (unset)
+  VR_OVERRIDE            (unset)
+  XR_RUNTIME_JSON        (unset)
+
+== nvidia ==
+  nvidia wine dlls       /usr/lib/x86_64-linux-gnu/nvidia/wine
+  NVIDIA_WINE_DLL_DIR    /usr/lib/x86_64-linux-gnu/nvidia/wine
+  PRIME offload          off
+
+== sony controllers ==
+  mode                   XInput fallback (PROTON_SONY_AUTO_XINPUT=1), native takeover
+  xinput                 GE Sony stack, Mythix native mode
+
+== wine mono / gecko ==
+  mono                   10.4.1 shared from files/share/wine/mono
+  gecko                  2.47.4 shared from files/share/wine/gecko
+
+== sync backend ==
+  NEUTRON_NTSYNC (knob)  auto
+  build supports         ntsync, fsync
+  /dev/ntsync            present
+  WINENTSYNC             1
+  NEUTRON_NTSYNC         1
+  WINEFSYNC              1
+  WINEESYNC              (unset)
+  => preferred           ntsync
+
+== compat config ==
+  compat_config          forcelgadd, gamedrive
+  cmdlineappend          (none)
+  WoW64                  off
+  nvapi                  on
+  WINEDLLOVERRIDES       d3d8=n;d3d9=n;d3d10core=n;d3d11=n;dxgi=n;openvr_api_dxvk=n;d3d12=n;d3d12core=n;lsteamclient=n,b;steam.exe=b;vrclient=;vrclient_x64=
+
+== prefix ==
+  STEAM_COMPAT_DATA_PATH /tmp/neutron-diag-probe
+  WINEPREFIX             /tmp/neutron-diag-probe/pfx
+  initialized            no
+  prefix version         (none)
+  tracked files          (none)
+
+== container ==
+  in container           no
+  PRESSURE_VESSEL_RUNTIME (unset)
+  PRESSURE_VESSEL_RUNTIME_BASE (unset)
+  STEAM_RUNTIME          (unset)
+
+== wrappers & runtimes ==
+  gamemode               no
+  gamemoderun            (not found)
+  vulkaninfo             /usr/bin/vulkaninfo
+  reflink copies         yes
+  MANGOHUD               (unset)
+  NEUTRON_LOG            (unset)
+
+== environment (neutron-managed; pass --full-env for all) ==
+  LD_LIBRARY_PATH=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/lib
+  NEUTRON_LOG_DIR=/tmp
+  NEUTRON_NO_CONTAINER=1
+  NEUTRON_NTSYNC=1
+  NVIDIA_WINE_DLL_DIR=/usr/lib/x86_64-linux-gnu/nvidia/wine
+  ORIG_LD_LIBRARY_PATH=
+  PATH=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin:/home/blu2442/Mythix-AI-Dashboard/node_modules/.bin:/home/blu2442/node_modules/.bin:/home/node_modules/.bin:/node_modules/.bin:/usr/share/nodejs/@npmcli/run-script/lib/node-gyp-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+  PROTON_SONY_AUTO_XINPUT=1
+  RADV_PERFTEST=gpl,nggc,sam
+  STEAM_COMPAT_DATA_PATH=/tmp/neutron-diag-probe
+  WINE=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine
+  WINE64=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine
+  WINEBOOT=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wineboot
+  WINEDEBUG=-all
+  WINEDLLOVERRIDES=d3d8=n;d3d9=n;d3d10core=n;d3d11=n;dxgi=n;openvr_api_dxvk=n;d3d12=n;d3d12core=n;lsteamclient=n,b;steam.exe=b;vrclient=;vrclient_x64=
+  WINEDLLPATH=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/lib/wine/x86_64-windows:/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/lib/wine/i386-windows
+  WINEFSYNC=1
+  WINELOADER=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wine
+  WINENTSYNC=1
+  WINEPREFIX=/tmp/neutron-diag-probe/pfx
+  WINESERVER=/stuff/compatibilitytools.d/Mythix-Neutron-11.19-4/files/bin/wineserver
+  WINE_GST_REGISTRY_DIR=/tmp/neutron-diag-probe/gstreamer-1.0/
+  WINE_LARGE_ADDRESS_AWARE=1
+  __GLVND_DISALLOW_PATCHING=1
